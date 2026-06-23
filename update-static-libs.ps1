@@ -1,7 +1,8 @@
 param(
     [string] $AndroidHome = $env:ANDROID_HOME,
     [string] $NdkVersion = $env:ANDROID_NDK_VERSION,
-    [int] $AndroidApi = 23
+    [int] $AndroidApi = 23,
+    [string] $OutputDir = ""
 )
 
 Set-StrictMode -Version Latest
@@ -23,6 +24,12 @@ $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildDir = Join-Path $repoRoot "build"
 $ffmpegExportDir = Join-Path $buildDir "ffmpeg-src-lf"
 $scriptBuildDir = Join-Path $buildDir "static-libs"
+$outputDir = if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+    Join-Path $repoRoot "OUTPUT"
+} else {
+    [System.IO.Path]::GetFullPath($OutputDir)
+}
+$outputAndroidLibsDir = Join-Path $outputDir "android-libs"
 $tempBuildScript = Join-Path $scriptBuildDir "build_ffmpeg_8_1.sh"
 $tempSetupScript = Join-Path $scriptBuildDir "setup_static_libs.sh"
 $jniFfmpegPath = Join-Path $repoRoot "media\libraries\decoder_ffmpeg\src\main\jni\ffmpeg"
@@ -100,11 +107,18 @@ if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
 
 New-Item -ItemType Directory -Force -Path $buildDir, $scriptBuildDir | Out-Null
 Assert-ChildPath $ffmpegExportDir $buildDir
+Assert-ChildPath $outputDir $repoRoot
+Assert-ChildPath $outputAndroidLibsDir $outputDir
 
 if (Test-Path -LiteralPath $ffmpegExportDir) {
     Remove-Item -LiteralPath $ffmpegExportDir -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path $ffmpegExportDir | Out-Null
+
+if (Test-Path -LiteralPath $outputAndroidLibsDir) {
+    Remove-Item -LiteralPath $outputAndroidLibsDir -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
 $wslRepoRoot = Convert-ToWslPath $repoRoot
 $wslFfmpegExportDir = Convert-ToWslPath $ffmpegExportDir
@@ -178,8 +192,20 @@ foreach ($abi in $expectedAbis) {
     }
 }
 
+Write-Host "Copying static libraries to $outputAndroidLibsDir"
+Copy-Item -LiteralPath (Join-Path $ffmpegExportDir "android-libs") -Destination $outputDir -Recurse
+
+foreach ($abi in $expectedAbis) {
+    foreach ($lib in $expectedLibs) {
+        $libPath = Join-Path $outputAndroidLibsDir "$abi\$lib"
+        if (-not (Test-Path -LiteralPath $libPath)) {
+            throw "Expected output static library was not copied: $libPath"
+        }
+    }
+}
+
 Write-Host "Updated FFmpeg static libraries:"
 foreach ($abi in $expectedAbis) {
     Write-Host "  $abi"
 }
-Write-Host "Static libraries are under $ffmpegExportDir\android-libs"
+Write-Host "Static libraries are under $outputAndroidLibsDir"
