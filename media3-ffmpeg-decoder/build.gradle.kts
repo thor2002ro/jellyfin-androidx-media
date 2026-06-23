@@ -68,12 +68,12 @@ afterEvaluate {
         pom {
             name.set("Jellyfin AndroidX Media3 libraries - $artifactId")
             description.set("AndroidX Media3 FFmpeg decoder used in the Jellyfin project")
-            url.set("https://github.com/jellyfin/jellyfin-androidx-media")
+            url.set("https://github.com/thor2002ro/jellyfin-androidx-media")
 
             scm {
-                connection.set("scm:git:git://github.com/jellyfin/jellyfin-androidx-media.git")
-                developerConnection.set("scm:git:ssh://github.com:jellyfin/jellyfin-androidx-media.git")
-                url.set("https://github.com/jellyfin/jellyfin-androidx-media/tree/master")
+                connection.set("scm:git:git://github.com/thor2002ro/jellyfin-androidx-media.git")
+                developerConnection.set("scm:git:ssh://github.com:thor2002ro/jellyfin-androidx-media.git")
+                url.set("https://github.com/thor2002ro/jellyfin-androidx-media/tree/master")
             }
 
             licenses {
