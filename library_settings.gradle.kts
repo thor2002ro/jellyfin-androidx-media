@@ -1,4 +1,4 @@
-val mediaRootDir = file("media")
+val mediaRootDir = file(System.getenv("ANDROIDX_MEDIA_ROOT") ?: "media")
 
 val modulePrefix = ":androidx-media-"
 gradle.extra["androidxMediaModulePrefix"] = modulePrefix
@@ -39,9 +39,10 @@ project(modulePrefix + "lib-effect").projectDir = File(mediaRootDir, "libraries/
 include(modulePrefix + "lib-inspector")
 project(modulePrefix + "lib-inspector").projectDir = File(mediaRootDir, "libraries/inspector")
 
-include(modulePrefix + "lib-inspector-frame")
-project(modulePrefix + "lib-inspector-frame").projectDir =
-    File(mediaRootDir, "libraries/inspector_frame")
+File(mediaRootDir, "libraries/inspector_frame").takeIf(File::isDirectory)?.let { projectDir ->
+    include(modulePrefix + "lib-inspector-frame")
+    project(modulePrefix + "lib-inspector-frame").projectDir = projectDir
+}
 
 include(modulePrefix + "lib-muxer")
 project(modulePrefix + "lib-muxer").projectDir = File(mediaRootDir, "libraries/muxer")

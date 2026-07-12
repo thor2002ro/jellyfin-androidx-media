@@ -22,6 +22,8 @@ if ([string]::IsNullOrWhiteSpace($NdkVersion)) {
 
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildDir = Join-Path $repoRoot "build"
+$mediaBuildRoot = Join-Path $buildDir "media-pr-stack"
+$mediaSource = Join-Path $repoRoot "media"
 $ffmpegExportDir = Join-Path $buildDir "ffmpeg-src-lf"
 $scriptBuildDir = Join-Path $buildDir "static-libs"
 $outputDir = if ([string]::IsNullOrWhiteSpace($OutputDir)) {
@@ -32,8 +34,11 @@ $outputDir = if ([string]::IsNullOrWhiteSpace($OutputDir)) {
 $outputAndroidLibsDir = Join-Path $outputDir "android-libs"
 $tempBuildScript = Join-Path $scriptBuildDir "build_ffmpeg_8_1.sh"
 $tempSetupScript = Join-Path $scriptBuildDir "setup_static_libs.sh"
-$jniFfmpegPath = Join-Path $repoRoot "media\libraries\decoder_ffmpeg\src\main\jni\ffmpeg"
-$upstreamBuildScript = Join-Path $repoRoot "media\libraries\decoder_ffmpeg\src\main\jni\build_ffmpeg.sh"
+$jniRoot = Join-Path $mediaBuildRoot "libraries\decoder_ffmpeg\src\main\jni"
+$jniFfmpegPath = Join-Path $jniRoot "ffmpeg"
+$jniLibyuvPath = Join-Path $jniRoot "libyuv"
+$upstreamBuildScript = Join-Path $jniRoot "build_ffmpeg.sh"
+$ffmpegVideoPatch = Join-Path $repoRoot "patches\ffmpeg-video-codecs.patch"
 $ndkPath = Join-Path $AndroidHome "ndk\$NdkVersion"
 $winToolchainBin = Join-Path $ndkPath "toolchains\llvm\prebuilt\windows-x86_64\bin"
 
@@ -41,7 +46,7 @@ $enabledDecoders = @(
     "flac", "alac", "pcm_mulaw", "pcm_alaw", "pcm_s16le", "pcm_f32le", "adpcm_ima_wav", "adpcm_ms",
     "mp1", "mp2", "mp3", "aac", "ac3", "eac3", "dca", "mlp", "truehd",
     "vorbis", "opus", "amrnb", "amrwb", "wavpack", "ape", "speex", "gsm", "gsm_ms",
-    "mpeg1video", "mpeg2video", "flv", "h263", "vp6", "vp6f", "h264", "hevc",
+    "mpeg1video", "mpeg2video", "flv", "h263", "vp6", "vp6f", "vp8", "vp9", "h264", "hevc",
     "msmpeg4v1", "msmpeg4v2", "msmpeg4v3", "mpeg4", "wmv1", "wmv2", "wmv3", "vc1"
 )
 
@@ -96,7 +101,94 @@ function Quote-Bash([string] $Value) {
     return "'" + $Value.Replace("'", "'\''") + "'"
 }
 
+function Remove-DirectoryTree([string] $Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    & attrib.exe -R "$fullPath\*" /S /D
+    [System.IO.Directory]::Delete("\\?\$fullPath", $true)
+}
+
+function Invoke-Git([string] $WorkingDirectory, [string[]] $Arguments) {
+    & git.exe -C $WorkingDirectory @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "git failed in $WorkingDirectory`: git $($Arguments -join ' ')"
+    }
+}
+
+function Initialize-MediaPrStack {
+    if (Test-Path -LiteralPath $mediaBuildRoot) {
+        Remove-LinkOrGeneratedPath (Join-Path $mediaBuildRoot "libraries\decoder_ffmpeg\src\main\jni\ffmpeg")
+        Remove-DirectoryTree $mediaBuildRoot
+    }
+
+    & git.exe clone --no-checkout $mediaSource $mediaBuildRoot
+    if ($LASTEXITCODE -ne 0) { throw "Failed to clone Media3 build tree" }
+    Invoke-Git $mediaBuildRoot @("config", "core.longpaths", "true")
+    Invoke-Git $mediaBuildRoot @("remote", "set-url", "origin", "https://github.com/androidx/media.git")
+    Invoke-Git $mediaBuildRoot @("fetch", "origin", "--tags")
+    $mediaVersion = (& git.exe -C $mediaBuildRoot tag --list "[0-9]*" --sort=-version:refname | Select-Object -First 1)
+    if ([string]::IsNullOrWhiteSpace($mediaVersion)) { throw "No Media3 release tag found" }
+    Write-Host "Building Media3 $mediaVersion"
+    Invoke-Git $mediaBuildRoot @("checkout", "--detach", "refs/tags/$mediaVersion")
+    Invoke-Git $mediaBuildRoot @("fetch", "origin", "main", "release")
+    Invoke-Git $mediaBuildRoot @("fetch", "origin", "refs/pull/1591/head")
+
+    $ffmpegVideoCommits = @(
+        "3e4245768dc3cd4490944e5a3c94a528302ffb46", "bb281936ca6b945d8f646fef49b62a63eb92f6a3",
+        "9a4a2820b9bf6063bc6ebc064045f1f191af2d27", "24cc94504f5aa59bf0e8310d01c9d10055e5afe8",
+        "53bc7dfe288635b63208dd805f19e3943684bb92", "00ef1b5dddb2e5b1141de6ca976b978108328319",
+        "57346bbf36a7456e99008298cf55ce16011401db"
+    )
+    foreach ($commit in $ffmpegVideoCommits) {
+        & git.exe -C $mediaBuildRoot cherry-pick --no-commit $commit
+        if ($LASTEXITCODE -ne 0) {
+            if ($commit -ne $ffmpegVideoCommits[0]) { throw "FFmpeg video commit conflicts: $commit" }
+            Invoke-Git $mediaBuildRoot @("checkout", "--ours", "--", "libraries/decoder_ffmpeg/README.md")
+            Invoke-Git $mediaBuildRoot @("rm", "--", "libraries/decoder_ffmpeg/build.gradle")
+            Invoke-Git $mediaBuildRoot @("checkout", "--theirs", "--", "libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java")
+            Invoke-Git $mediaBuildRoot @("add", "libraries/decoder_ffmpeg")
+        }
+        Invoke-Git $mediaBuildRoot @("commit", "--reuse-message=$commit")
+    }
+
+    $pullRequests = @(
+        @{ Number = 3235; Branch = "main" },
+        @{ Number = 3280; Branch = "main" },
+        @{ Number = 3276; Branch = "release" },
+        @{ Number = 3151; Branch = "main" },
+        @{ Number = 3055; Branch = "release" },
+        @{ Number = 3092; Branch = "release" },
+        @{ Number = 3330; Branch = "main" }
+    )
+
+    foreach ($pullRequest in $pullRequests) {
+        $number = $pullRequest.Number
+        $ref = "refs/media-build/pr-$number-head"
+        Invoke-Git $mediaBuildRoot @("fetch", "origin", "refs/pull/$number/head`:$ref")
+        $commits = @(& git.exe -C $mediaBuildRoot rev-list --reverse --no-merges --cherry-pick --right-only "origin/$($pullRequest.Branch)...$ref")
+        if ($LASTEXITCODE -ne 0) { throw "Failed to list commits for PR $number" }
+
+        foreach ($commit in $commits) {
+            & git.exe -C $mediaBuildRoot cherry-pick --no-commit $commit
+            if ($LASTEXITCODE -ne 0) {
+                $conflicts = @(& git.exe -C $mediaBuildRoot diff --name-only --diff-filter=U)
+                if ($conflicts.Count -ne 1 -or $conflicts[0] -ne "RELEASENOTES.md") {
+                    throw "PR $number conflicts in: $($conflicts -join ', ')"
+                }
+                Invoke-Git $mediaBuildRoot @("checkout", "--ours", "--", "RELEASENOTES.md")
+                Invoke-Git $mediaBuildRoot @("add", "RELEASENOTES.md")
+            }
+            Invoke-Git $mediaBuildRoot @("commit", "--reuse-message=$commit")
+        }
+    }
+
+    Invoke-Git $mediaBuildRoot @("apply", $ffmpegVideoPatch)
+}
+
 Resolve-RequiredPath $repoRoot "Repository root" | Out-Null
+Initialize-MediaPrStack
+& git.exe clone --depth 1 https://chromium.googlesource.com/libyuv/libyuv $jniLibyuvPath
+if ($LASTEXITCODE -ne 0) { throw "Failed to clone libyuv" }
 Resolve-RequiredPath $upstreamBuildScript "Upstream FFmpeg build script" | Out-Null
 Resolve-RequiredPath $ndkPath "Android NDK $NdkVersion" | Out-Null
 Resolve-RequiredPath $winToolchainBin "Windows NDK LLVM toolchain" | Out-Null
@@ -121,11 +213,12 @@ if (Test-Path -LiteralPath $outputAndroidLibsDir) {
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
 $wslRepoRoot = Convert-ToWslPath $repoRoot
+$wslMediaBuildRoot = Convert-ToWslPath $mediaBuildRoot
 $wslFfmpegExportDir = Convert-ToWslPath $ffmpegExportDir
 $wslWinToolchainBin = Convert-ToWslPath $winToolchainBin
 $wslTempBuildScript = Convert-ToWslPath $tempBuildScript
 $wslTempSetupScript = Convert-ToWslPath $tempSetupScript
-$wslModulePath = "$wslRepoRoot/media/libraries/decoder_ffmpeg/src/main"
+$wslModulePath = "$wslMediaBuildRoot/libraries/decoder_ffmpeg/src/main"
 $wslWrapNdk = "/tmp/jellyfin-android-ndk-winwrap/ndk/$NdkVersion"
 $wslWrapBin = "$wslWrapNdk/toolchains/llvm/prebuilt/linux-x86_64/bin"
 
@@ -142,6 +235,9 @@ $buildScriptText = $buildScriptText -replace "`r`n", "`n"
 $buildScriptText = $buildScriptText -replace "`r", "`n"
 $buildScriptLines = $buildScriptText -split "`n" | Where-Object { $_ -notmatch "--disable-postproc" }
 $buildScriptText = ($buildScriptLines -join "`n") + "`n"
+$buildScriptText = $buildScriptText.Replace("--disable-static", "--enable-static")
+$buildScriptText = $buildScriptText.Replace("--enable-shared", "--disable-shared")
+$buildScriptText = $buildScriptText.Replace("--enable-avformat", "--disable-avformat")
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($tempBuildScript, $buildScriptText, $utf8NoBom)
 
@@ -169,11 +265,12 @@ for triple in armv7a-linux-androideabi aarch64-linux-android i686-linux-android 
   ln -sf "`${triple}$AndroidApi-clang++" $(Quote-Bash $wslWrapBin)/"`${triple}$AndroidApi-g++"
 done
 mkdir -p $(Quote-Bash "$wslFfmpegExportDir/ffbuild-tmp")
-cd $(Quote-Bash "$wslRepoRoot/media/libraries/decoder_ffmpeg/src/main/jni")
+cd $(Quote-Bash "$wslMediaBuildRoot/libraries/decoder_ffmpeg/src/main/jni")
 TMPDIR=ffbuild-tmp bash $(Quote-Bash $wslTempBuildScript) $(Quote-Bash $wslModulePath) $(Quote-Bash $wslWrapNdk) linux-x86_64 $AndroidApi $decoderArgs
 "@
 
 Write-Host "Building FFmpeg static libraries"
+$setupAndBuildCommand = ($setupAndBuildCommand -replace "`r`n", "`n") -replace "`r", "`n"
 [System.IO.File]::WriteAllText($tempSetupScript, $setupAndBuildCommand + "`n", $utf8NoBom)
 & wsl.exe bash $wslTempSetupScript
 if ($LASTEXITCODE -ne 0) {
@@ -181,7 +278,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $expectedAbis = @("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
-$expectedLibs = @("libavcodec.a", "libavutil.a", "libswresample.a")
+$expectedLibs = @("libavcodec.a", "libavutil.a", "libswresample.a", "libswscale.a")
 
 foreach ($abi in $expectedAbis) {
     foreach ($lib in $expectedLibs) {
@@ -209,3 +306,20 @@ foreach ($abi in $expectedAbis) {
     Write-Host "  $abi"
 }
 Write-Host "Static libraries are under $outputAndroidLibsDir"
+
+$env:ANDROIDX_MEDIA_ROOT = $mediaBuildRoot
+$env:ANDROID_HOME = $AndroidHome
+Write-Host "Building decoder AAR"
+Push-Location $mediaBuildRoot
+try {
+    & (Join-Path $mediaBuildRoot "gradlew.bat") :lib-decoder-ffmpeg:assembleRelease
+    if ($LASTEXITCODE -ne 0) { throw "AAR build failed" }
+} finally {
+    Pop-Location
+}
+
+$aarPath = Join-Path $mediaBuildRoot "libraries\decoder_ffmpeg\buildout\outputs\aar\lib-decoder-ffmpeg-release.aar"
+if (-not (Test-Path -LiteralPath $aarPath)) { throw "Built decoder AAR was not found: $aarPath" }
+$aarOutput = Join-Path $outputDir "media3-ffmpeg-decoder-latest-SNAPSHOT.aar"
+Copy-Item -LiteralPath $aarPath -Destination $aarOutput -Force
+Write-Host "Built AAR: $aarOutput"
