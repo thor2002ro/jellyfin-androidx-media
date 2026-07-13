@@ -68,3 +68,12 @@ git clone --depth 1 https://chromium.googlesource.com/libyuv/libyuv "${FFMPEG_MO
 # Start build
 cd "${FFMPEG_MOD_PATH}/jni"
 ./build_ffmpeg.sh "${FFMPEG_MOD_PATH}" "${ANDROID_NDK_PATH}" "linux-x86_64" 23 "${ENABLED_DECODERS[@]}"
+
+for abi in armeabi-v7a arm64-v8a x86 x86_64; do
+    for lib in libavcodec.a libavfilter.a libavutil.a libswresample.a libswscale.a; do
+        [[ -f "${FFMPEG_PATH}/android-libs/${abi}/${lib}" ]] || {
+            echo "Missing FFmpeg library: ${abi}/${lib}"
+            exit 1
+        }
+    done
+done
