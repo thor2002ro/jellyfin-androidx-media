@@ -278,7 +278,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $expectedAbis = @("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
-$expectedLibs = @("libavcodec.a", "libavfilter.a", "libavutil.a", "libswresample.a", "libswscale.a")
+$expectedLibs = @("libavcodec.a", "libavutil.a", "libswresample.a", "libswscale.a")
 
 foreach ($abi in $expectedAbis) {
     foreach ($lib in $expectedLibs) {

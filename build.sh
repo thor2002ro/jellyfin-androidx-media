@@ -70,7 +70,7 @@ cd "${FFMPEG_MOD_PATH}/jni"
 ./build_ffmpeg.sh "${FFMPEG_MOD_PATH}" "${ANDROID_NDK_PATH}" "linux-x86_64" 23 "${ENABLED_DECODERS[@]}"
 
 for abi in armeabi-v7a arm64-v8a x86 x86_64; do
-    for lib in libavcodec.a libavfilter.a libavutil.a libswresample.a libswscale.a; do
+    for lib in libavcodec.a libavutil.a libswresample.a libswscale.a; do
         [[ -f "${FFMPEG_PATH}/android-libs/${abi}/${lib}" ]] || {
             echo "Missing FFmpeg library: ${abi}/${lib}"
             exit 1
