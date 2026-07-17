@@ -2,6 +2,7 @@ param(
     [string] $AndroidHome = $env:ANDROID_HOME,
     [string] $NdkVersion = $env:ANDROID_NDK_VERSION,
     [int] $AndroidApi = 23,
+    [string] $MediaVersion = $env:MEDIA_VERSION,
     [string] $OutputDir = ""
 )
 
@@ -22,7 +23,7 @@ if ([string]::IsNullOrWhiteSpace($NdkVersion)) {
 
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildDir = Join-Path $repoRoot "build"
-$mediaBuildRoot = Join-Path $buildDir "media-pr-stack"
+$mediaBuildRoot = Join-Path ([System.IO.Path]::GetTempPath()) "jellyfin-androidx-media-pr-stack"
 $mediaSource = Join-Path $repoRoot "media"
 $ffmpegExportDir = Join-Path $buildDir "ffmpeg-src-lf"
 $scriptBuildDir = Join-Path $buildDir "static-libs"
@@ -43,11 +44,10 @@ $ndkPath = Join-Path $AndroidHome "ndk\$NdkVersion"
 $winToolchainBin = Join-Path $ndkPath "toolchains\llvm\prebuilt\windows-x86_64\bin"
 
 $enabledDecoders = @(
-    "flac", "alac", "pcm_mulaw", "pcm_alaw", "pcm_s16le", "pcm_f32le", "adpcm_ima_wav", "adpcm_ms",
-    "mp1", "mp2", "mp3", "aac", "ac3", "eac3", "dca", "mlp", "truehd",
-    "vorbis", "opus", "amrnb", "amrwb", "wavpack", "ape", "speex", "gsm", "gsm_ms",
-    "mpeg1video", "mpeg2video", "flv", "h263", "vp6", "vp6f", "vp8", "vp9", "h264", "hevc",
-    "msmpeg4v1", "msmpeg4v2", "msmpeg4v3", "mpeg4", "wmv1", "wmv2", "wmv3", "vc1"
+    "flac", "alac", "pcm_mulaw", "pcm_alaw", "mp3", "aac", "ac3", "eac3", "dca", "truehd",
+    "vorbis", "opus", "amrnb", "amrwb", "gsm_ms",
+    "mpeg1video", "mpeg2video", "h263", "vp8", "vp9", "h264", "hevc",
+    "msmpeg4v2", "msmpeg4v3", "mpeg4", "vc1"
 )
 
 function Resolve-RequiredPath([string] $Path, [string] $Description) {
@@ -125,12 +125,24 @@ function Initialize-MediaPrStack {
     if ($LASTEXITCODE -ne 0) { throw "Failed to clone Media3 build tree" }
     Invoke-Git $mediaBuildRoot @("config", "core.longpaths", "true")
     Invoke-Git $mediaBuildRoot @("remote", "set-url", "origin", "https://github.com/androidx/media.git")
-    Invoke-Git $mediaBuildRoot @("fetch", "origin", "--tags")
-    $mediaVersion = (& git.exe -C $mediaBuildRoot tag --list "[0-9]*" --sort=-version:refname | Select-Object -First 1)
-    if ([string]::IsNullOrWhiteSpace($mediaVersion)) { throw "No Media3 release tag found" }
+    Invoke-Git $mediaBuildRoot @("fetch", "origin", "--tags", "main", "release")
+    $mediaVersion = $MediaVersion
+    if ([string]::IsNullOrWhiteSpace($mediaVersion)) {
+        $mediaVersion = "origin/main"
+    } else {
+        & git.exe -C $mediaBuildRoot rev-parse --verify --quiet $mediaVersion | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            & git.exe -C $mediaBuildRoot rev-parse --verify --quiet "origin/$mediaVersion" | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                $mediaVersion = "origin/$mediaVersion"
+            } else {
+                $mediaVersion = "refs/tags/$mediaVersion"
+            }
+        }
+    }
+    Invoke-Git $mediaBuildRoot @("rev-parse", "--verify", $mediaVersion)
     Write-Host "Building Media3 $mediaVersion"
-    Invoke-Git $mediaBuildRoot @("checkout", "--detach", "refs/tags/$mediaVersion")
-    Invoke-Git $mediaBuildRoot @("fetch", "origin", "main", "release")
+    Invoke-Git $mediaBuildRoot @("checkout", "--detach", $mediaVersion)
     Invoke-Git $mediaBuildRoot @("fetch", "origin", "refs/pull/1591/head")
 
     $ffmpegVideoCommits = @(
@@ -152,8 +164,8 @@ function Initialize-MediaPrStack {
     }
 
     $pullRequests = @(
-        @{ Number = 3235; Branch = "main" },
         @{ Number = 3280; Branch = "main" },
+        @{ Number = 3271; Branch = "main" },
         @{ Number = 3276; Branch = "release" },
         @{ Number = 3151; Branch = "main" },
         @{ Number = 3055; Branch = "release" },
@@ -233,11 +245,6 @@ Write-Host "Preparing FFmpeg 8.1 build script"
 $buildScriptText = [System.IO.File]::ReadAllText($upstreamBuildScript)
 $buildScriptText = $buildScriptText -replace "`r`n", "`n"
 $buildScriptText = $buildScriptText -replace "`r", "`n"
-$buildScriptLines = $buildScriptText -split "`n" | Where-Object { $_ -notmatch "--disable-postproc" }
-$buildScriptText = ($buildScriptLines -join "`n") + "`n"
-$buildScriptText = $buildScriptText.Replace("--disable-static", "--enable-static")
-$buildScriptText = $buildScriptText.Replace("--enable-shared", "--disable-shared")
-$buildScriptText = $buildScriptText.Replace("--enable-avformat", "--disable-avformat")
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($tempBuildScript, $buildScriptText, $utf8NoBom)
 
