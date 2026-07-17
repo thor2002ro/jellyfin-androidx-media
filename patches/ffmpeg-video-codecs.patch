@@ -1,8 +1,229 @@
+diff --git a/libraries/decoder/src/main/java/androidx/media3/decoder/SimpleDecoder.java b/libraries/decoder/src/main/java/androidx/media3/decoder/SimpleDecoder.java
+index db4a49c354b67b7c1b68e4382286cba85c41ef58..2249ec2c157d9932b610d317a0584ddf245f1978 100644
+--- a/libraries/decoder/src/main/java/androidx/media3/decoder/SimpleDecoder.java
++++ b/libraries/decoder/src/main/java/androidx/media3/decoder/SimpleDecoder.java
+@@ -50,6 +50,7 @@ public abstract class SimpleDecoder<
+   @Nullable private E exception;
+   private boolean flushed;
+   private boolean released;
++  private boolean inputBufferConsumed;
+   private int skippedOutputBufferCount;
+   private long outputStartTimeUs;
+ 
+@@ -118,6 +119,16 @@ public abstract class SimpleDecoder<
+     }
+   }
+ 
++  /**
++   * Keeps the current input buffer queued so decoding can be retried after an output buffer is
++   * released.
++   *
++   * <p>This method must only be called from the decoder thread.
++   */
++  protected final void setInputBufferNotConsumed() {
++    inputBufferConsumed = false;
++  }
++
+   @Override
+   public final void setOutputStartTimeUs(long outputStartTimeUs) {
+     synchronized (lock) {
+@@ -273,9 +284,8 @@ public abstract class SimpleDecoder<
+       flushed = false;
+     }
+ 
+-    if (inputBuffer.isEndOfStream()) {
+-      outputBuffer.addFlag(C.BUFFER_FLAG_END_OF_STREAM);
+-    } else {
++    inputBufferConsumed = true;
++    if (!inputBuffer.isEndOfStream()) {
+       outputBuffer.timeUs = inputBuffer.timeUs;
+       if (inputBuffer.isFirstSample()) {
+         outputBuffer.addFlag(C.BUFFER_FLAG_FIRST_SAMPLE);
+@@ -283,25 +293,30 @@ public abstract class SimpleDecoder<
+       if (!isAtLeastOutputStartTimeUs(inputBuffer.timeUs)) {
+         outputBuffer.shouldBeSkipped = true;
+       }
+-      @Nullable E exception;
+-      try {
++    }
++    @Nullable E exception;
++    try {
++      if (inputBuffer.isEndOfStream()) {
++        exception = decodeEndOfStream(outputBuffer, resetDecoder);
++        inputBufferConsumed = outputBuffer.isEndOfStream();
++      } else {
+         exception = decode(inputBuffer, outputBuffer, resetDecoder);
+-      } catch (RuntimeException e) {
+-        // This can occur if a sample is malformed in a way that the decoder is not robust against.
+-        // We don't want the process to die in this case, but we do want to propagate the error.
+-        exception = createUnexpectedDecodeException(e);
+-      } catch (OutOfMemoryError e) {
+-        // This can occur if a sample is malformed in a way that causes the decoder to think it
+-        // needs to allocate a large amount of memory. We don't want the process to die in this
+-        // case, but we do want to propagate the error.
+-        exception = createUnexpectedDecodeException(e);
+       }
+-      if (exception != null) {
+-        synchronized (lock) {
+-          this.exception = exception;
+-        }
+-        return false;
++    } catch (RuntimeException e) {
++      // This can occur if a sample is malformed in a way that the decoder is not robust against.
++      // We don't want the process to die in this case, but we do want to propagate the error.
++      exception = createUnexpectedDecodeException(e);
++    } catch (OutOfMemoryError e) {
++      // This can occur if a sample is malformed in a way that causes the decoder to think it
++      // needs to allocate a large amount of memory. We don't want the process to die in this
++      // case, but we do want to propagate the error.
++      exception = createUnexpectedDecodeException(e);
++    }
++    if (exception != null) {
++      synchronized (lock) {
++        this.exception = exception;
+       }
++      return false;
+     }
+ 
+     synchronized (lock) {
+@@ -320,8 +335,11 @@ public abstract class SimpleDecoder<
+           currentExecutor.execute(currentOnOutputBufferAvailableRunnable);
+         }
+       }
+-      // Make the input buffer available again.
+-      releaseInputBufferInternal(inputBuffer, /* notifyCallback= */ true);
++      if (flushed || inputBufferConsumed) {
++        releaseInputBufferInternal(inputBuffer, /* notifyCallback= */ true);
++      } else {
++        queuedInputBuffers.addFirst(inputBuffer);
++      }
+     }
+ 
+     return true;
+@@ -362,6 +380,23 @@ public abstract class SimpleDecoder<
+    */
+   protected abstract E createUnexpectedDecodeException(Throwable error);
+ 
++  /**
++   * Drains the decoder at the end of the stream.
++   *
++   * <p>The default implementation immediately emits an end-of-stream output buffer. Subclasses may
++   * emit a final decoded buffer instead; the same input buffer will be processed again until this
++   * method marks the output buffer as end of stream.
++   *
++   * @param outputBuffer The output buffer to store decoded data.
++   * @param reset Whether the decoder must be reset before draining.
++   * @return A decoder exception if an error occurred, or null if decoding was successful.
++   */
++  @Nullable
++  protected E decodeEndOfStream(O outputBuffer, boolean reset) {
++    outputBuffer.addFlag(C.BUFFER_FLAG_END_OF_STREAM);
++    return null;
++  }
++
+   /**
+    * Decodes the {@code inputBuffer} and stores any decoded output in {@code outputBuffer}.
+    *
+diff --git a/libraries/decoder/src/test/java/androidx/media3/decoder/SimpleDecoderTest.java b/libraries/decoder/src/test/java/androidx/media3/decoder/SimpleDecoderTest.java
+index b27c41e2b73a269f53cc58013b638f02036cba0d..4ab17d3aa0c8b11703696068003b67e21ed6aa3f 100644
+--- a/libraries/decoder/src/test/java/androidx/media3/decoder/SimpleDecoderTest.java
++++ b/libraries/decoder/src/test/java/androidx/media3/decoder/SimpleDecoderTest.java
+@@ -15,6 +15,7 @@
+  */
+ package androidx.media3.decoder;
+ 
++import static androidx.media3.common.util.Assertions.checkNotNull;
+ import static com.google.common.truth.Truth.assertThat;
+ import static java.util.concurrent.TimeUnit.SECONDS;
+ 
+@@ -105,9 +106,56 @@ public final class SimpleDecoderTest {
+     assertThat(notified.get()).isFalse();
+   }
+ 
++  @Test
++  public void inputNotConsumed_decodesSameInputAgain() throws Exception {
++    FakeSimpleDecoder decoder = new FakeSimpleDecoder();
++    decoder.retryNextInput = true;
++    DecoderInputBuffer inputBuffer = decoder.dequeueInputBuffer();
++    decoder.queueInputBuffer(inputBuffer);
++
++    dequeueOutputBuffer(decoder).release();
++    dequeueOutputBuffer(decoder).release();
++
++    assertThat(decoder.decodeCount).isEqualTo(2);
++    decoder.release();
++  }
++
++  @Test
++  public void endOfStreamWithPendingOutput_drainsBeforeEndOfStream() throws Exception {
++    FakeSimpleDecoder decoder = new FakeSimpleDecoder();
++    decoder.outputBeforeEndOfStream = true;
++    DecoderInputBuffer inputBuffer = decoder.dequeueInputBuffer();
++    inputBuffer.addFlag(C.BUFFER_FLAG_END_OF_STREAM);
++    decoder.queueInputBuffer(inputBuffer);
++
++    SimpleDecoderOutputBuffer outputBuffer = dequeueOutputBuffer(decoder);
++    assertThat(outputBuffer.isEndOfStream()).isFalse();
++    outputBuffer.release();
++    outputBuffer = dequeueOutputBuffer(decoder);
++    assertThat(outputBuffer.isEndOfStream()).isTrue();
++    outputBuffer.release();
++    decoder.release();
++  }
++
++  private static SimpleDecoderOutputBuffer dequeueOutputBuffer(FakeSimpleDecoder decoder)
++      throws Exception {
++    long deadlineMs = System.currentTimeMillis() + SECONDS.toMillis(1);
++    @Nullable SimpleDecoderOutputBuffer outputBuffer;
++    while ((outputBuffer = decoder.dequeueOutputBuffer()) == null
++        && System.currentTimeMillis() < deadlineMs) {
++      Thread.sleep(10);
++    }
++    assertThat(outputBuffer).isNotNull();
++    return checkNotNull(outputBuffer);
++  }
++
+   private static final class FakeSimpleDecoder
+       extends SimpleDecoder<DecoderInputBuffer, SimpleDecoderOutputBuffer, DecoderException> {
+ 
++    private boolean retryNextInput;
++    private boolean outputBeforeEndOfStream;
++    private int decodeCount;
++
+     FakeSimpleDecoder() {
+       super(new DecoderInputBuffer[1], new SimpleDecoderOutputBuffer[1]);
+     }
+@@ -136,10 +184,23 @@ public final class SimpleDecoderTest {
+     @Override
+     protected DecoderException decode(
+         DecoderInputBuffer inputBuffer, SimpleDecoderOutputBuffer outputBuffer, boolean reset) {
+-      if (inputBuffer.isEndOfStream()) {
+-        outputBuffer.addFlag(C.BUFFER_FLAG_END_OF_STREAM);
++      decodeCount++;
++      if (retryNextInput) {
++        retryNextInput = false;
++        setInputBufferNotConsumed();
+       }
+       return null;
+     }
++
++    @Nullable
++    @Override
++    protected DecoderException decodeEndOfStream(
++        SimpleDecoderOutputBuffer outputBuffer, boolean reset) {
++      if (outputBeforeEndOfStream) {
++        outputBeforeEndOfStream = false;
++        return null;
++      }
++      return super.decodeEndOfStream(outputBuffer, reset);
++    }
+   }
+ }
 diff --git a/libraries/decoder_ffmpeg/proguard-rules.txt b/libraries/decoder_ffmpeg/proguard-rules.txt
+index aaf9280fd9b76c1a5eba14029d4fe2a104746742..45a89e819a8ff07a7f9ccd6bedb25f6ac810389d 100644
 --- a/libraries/decoder_ffmpeg/proguard-rules.txt
 +++ b/libraries/decoder_ffmpeg/proguard-rules.txt
-@@ -8,4 +8,11 @@
- # This method is called from native code
+@@ -9,3 +9,10 @@
  -keep, includedescriptorclasses class androidx.media3.decoder.ffmpeg.FfmpegAudioDecoder {
    private java.nio.ByteBuffer growOutputBuffer(androidx.media3.decoder.SimpleDecoderOutputBuffer, int);
  }
@@ -13,11 +234,353 @@ diff --git a/libraries/decoder_ffmpeg/proguard-rules.txt b/libraries/decoder_ffm
 +-keepclassmembers class androidx.media3.decoder.DecoderOutputBuffer {
 +  long timeUs;
 +}
-
+diff --git a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoDecoder.java b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoDecoder.java
+index 9cc7f561a0dd006cad38282ede9f3a7ff7e69932..cb61ea5a0d744f4613dd6fae853830e1e5fb5d14 100644
+--- a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoDecoder.java
++++ b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoDecoder.java
+@@ -47,13 +47,18 @@ import java.util.List;
+   private static final int VIDEO_DECODER_SUCCESS = 0;
+   private static final int VIDEO_DECODER_ERROR_INVALID_DATA = -1;
+   private static final int VIDEO_DECODER_ERROR_OTHER = -2;
+-  private static final int VIDEO_DECODER_ERROR_READ_FRAME = -3;
++  private static final int VIDEO_DECODER_ERROR_TRY_AGAIN = -3;
++  private static final int VIDEO_DECODER_ERROR_SURFACE = -4;
++  private static final int VIDEO_DECODER_END_OF_STREAM = -5;
+   // LINT.ThenChange(../../../../../../../jni/ffmpeg_jni.cc)
+ 
+   private final String codecName;
++  private final Object nativeContextLock;
+   private long nativeContext;
+   @Nullable
+   private final byte[] extraData;
++  private Format outputFormat;
++  private boolean draining;
+   @C.VideoOutputMode
+   private volatile int outputMode;
+ 
+@@ -78,8 +83,10 @@ import java.util.List;
+     if (!FfmpegLibrary.isAvailable()) {
+       throw new FfmpegDecoderException("Failed to load decoder native library.");
+     }
+-    codecName = Assertions.checkNotNull(FfmpegLibrary.getCodecName(format.sampleMimeType));
++    nativeContextLock = new Object();
++    codecName = Assertions.checkNotNull(FfmpegLibrary.getCodecName(format));
+     extraData = getExtraData(format.sampleMimeType, format.initializationData);
++    outputFormat = format;
+     degree = format.rotationDegrees;
+     nativeContext = ffmpegInitialize(codecName, extraData, threads, degree);
+     if (nativeContext == 0) {
+@@ -125,7 +132,9 @@ import java.util.List;
+ 
+   @Override
+   protected DecoderInputBuffer createInputBuffer() {
+-    return new DecoderInputBuffer(DecoderInputBuffer.BUFFER_REPLACEMENT_MODE_DIRECT);
++    return new DecoderInputBuffer(
++        DecoderInputBuffer.BUFFER_REPLACEMENT_MODE_DIRECT,
++        FfmpegLibrary.getInputBufferPaddingSize());
+   }
+ 
+   @Override
+@@ -133,57 +142,120 @@ import java.util.List;
+     return new VideoDecoderOutputBuffer(this::releaseOutputBuffer);
+   }
+ 
++  @Override
++  protected void releaseOutputBuffer(VideoDecoderOutputBuffer outputBuffer) {
++    synchronized (nativeContextLock) {
++      long frameHandle = outputBuffer.decoderPrivate;
++      if (frameHandle != 0) {
++        outputBuffer.decoderPrivate = 0;
++        if (nativeContext != 0) {
++          ffmpegReleaseFrame(nativeContext, frameHandle);
++        }
++      }
++    }
++    super.releaseOutputBuffer(outputBuffer);
++  }
++
+   @Override
+   @Nullable
+   protected FfmpegDecoderException decode(
+       DecoderInputBuffer inputBuffer, VideoDecoderOutputBuffer outputBuffer, boolean reset) {
+     if (reset) {
+-
+       nativeContext = ffmpegReset(nativeContext);
+       if (nativeContext == 0) {
+         return new FfmpegDecoderException("Error resetting (see logcat).");
+       }
++      draining = false;
+     }
+ 
+-    // send packet
+     ByteBuffer inputData = Util.castNonNull(inputBuffer.data);
+     int inputSize = inputData.limit();
+-    // enqueue origin data
+-    int sendPacketResult = ffmpegSendPacket(nativeContext, inputData, inputSize,
+-        inputBuffer.timeUs);
++    if (inputBuffer.format != null) {
++      outputFormat = inputBuffer.format;
++    }
++    int sendPacketResult =
++        ffmpegSendPacket(nativeContext, inputData, inputSize, inputBuffer.timeUs);
+ 
+     if (sendPacketResult == VIDEO_DECODER_ERROR_INVALID_DATA) {
+       outputBuffer.shouldBeSkipped = true;
+       return null;
+-    } else if (sendPacketResult == VIDEO_DECODER_ERROR_READ_FRAME) {
+-      // need read frame
+     } else if (sendPacketResult == VIDEO_DECODER_ERROR_OTHER) {
+       return new FfmpegDecoderException("ffmpegDecode error: (see logcat)");
++    } else if (sendPacketResult == VIDEO_DECODER_END_OF_STREAM) {
++      return new FfmpegDecoderException("Unexpected end of stream while sending a packet.");
+     }
+ 
+-    // receive frame
++    @C.VideoOutputMode int currentOutputMode = outputMode;
+     boolean decodeOnly = !isAtLeastOutputStartTimeUs(inputBuffer.timeUs);
+-    // We need to dequeue the decoded frame from the decoder even when the input data is
+-    // decode-only.
+     if (!decodeOnly) {
+-      outputBuffer.init(inputBuffer.timeUs, outputMode, null);
++      outputBuffer.init(inputBuffer.timeUs, currentOutputMode, null);
+     }
+-    int getFrameResult = ffmpegReceiveFrame(nativeContext, outputMode, outputBuffer, decodeOnly);
+-    if (getFrameResult == VIDEO_DECODER_ERROR_OTHER) {
++    int receiveFrameResult =
++        ffmpegReceiveFrame(nativeContext, currentOutputMode, outputBuffer, decodeOnly);
++    if (receiveFrameResult == VIDEO_DECODER_ERROR_OTHER
++        || receiveFrameResult == VIDEO_DECODER_END_OF_STREAM
++        || (sendPacketResult == VIDEO_DECODER_ERROR_TRY_AGAIN
++            && receiveFrameResult == VIDEO_DECODER_ERROR_TRY_AGAIN)) {
+       return new FfmpegDecoderException("ffmpegDecode error: (see logcat)");
+     }
+ 
+-    if (getFrameResult == VIDEO_DECODER_ERROR_INVALID_DATA) {
++    if (sendPacketResult == VIDEO_DECODER_ERROR_TRY_AGAIN) {
++      setInputBufferNotConsumed();
++    }
++    if (receiveFrameResult == VIDEO_DECODER_ERROR_INVALID_DATA
++        || receiveFrameResult == VIDEO_DECODER_ERROR_TRY_AGAIN) {
+       outputBuffer.shouldBeSkipped = true;
++      return null;
+     }
+ 
+-    if (!decodeOnly) {
+-      outputBuffer.format = inputBuffer.format;
+-    }
++    outputBuffer.format = outputFormat;
++    outputBuffer.shouldBeSkipped = !isAtLeastOutputStartTimeUs(outputBuffer.timeUs);
+ 
+     return null;
+   }
+ 
++  @Override
++  @Nullable
++  protected FfmpegDecoderException decodeEndOfStream(
++      VideoDecoderOutputBuffer outputBuffer, boolean reset) {
++    if (reset) {
++      nativeContext = ffmpegReset(nativeContext);
++      if (nativeContext == 0) {
++        return new FfmpegDecoderException("Error resetting (see logcat).");
++      }
++      draining = false;
++    }
++    if (!draining) {
++      int sendPacketResult =
++          ffmpegSendPacket(
++              nativeContext, /* encodedData= */ null, /* length= */ 0, C.TIME_UNSET);
++      if (sendPacketResult == VIDEO_DECODER_SUCCESS) {
++        draining = true;
++      } else if (sendPacketResult == VIDEO_DECODER_END_OF_STREAM) {
++        outputBuffer.addFlag(C.BUFFER_FLAG_END_OF_STREAM);
++        return null;
++      } else if (sendPacketResult != VIDEO_DECODER_ERROR_TRY_AGAIN) {
++        return new FfmpegDecoderException("Error flushing FFmpeg decoder (see logcat).");
++      }
++    }
++
++    @C.VideoOutputMode int currentOutputMode = outputMode;
++    outputBuffer.init(C.TIME_UNSET, currentOutputMode, null);
++    int receiveFrameResult =
++        ffmpegReceiveFrame(
++            nativeContext, currentOutputMode, outputBuffer, /* decodeOnly= */ false);
++    if (receiveFrameResult == VIDEO_DECODER_SUCCESS) {
++      outputBuffer.format = outputFormat;
++      outputBuffer.shouldBeSkipped = !isAtLeastOutputStartTimeUs(outputBuffer.timeUs);
++      return null;
++    } else if (receiveFrameResult == VIDEO_DECODER_END_OF_STREAM) {
++      draining = false;
++      outputBuffer.addFlag(C.BUFFER_FLAG_END_OF_STREAM);
++      return null;
++    }
++    return new FfmpegDecoderException("Error draining FFmpeg decoder (see logcat).");
++  }
++
+   @Override
+   protected FfmpegDecoderException createUnexpectedDecodeException(Throwable error) {
+     return new FfmpegDecoderException("Unexpected decode error", error);
+@@ -192,8 +264,12 @@ import java.util.List;
+   @Override
+   public void release() {
+     super.release();
+-    ffmpegRelease(nativeContext);
+-    nativeContext = 0;
++    synchronized (nativeContextLock) {
++      if (nativeContext != 0) {
++        ffmpegRelease(nativeContext);
++        nativeContext = 0;
++      }
++    }
+   }
+ 
+   /**
+@@ -202,19 +278,30 @@ import java.util.List;
+    *
+    * @param outputBuffer Output buffer.
+    * @param surface      Output surface.
+-   * @throws FfmpegDecoderException Thrown if called with invalid output mode or frame rendering
+-   *                                fails.
++   * @throws FfmpegDecoderException Thrown if the decoder state is invalid.
+    */
+   public void renderToSurface(VideoDecoderOutputBuffer outputBuffer, Surface surface)
+       throws FfmpegDecoderException {
+     if (outputBuffer.mode != C.VIDEO_OUTPUT_MODE_SURFACE_YUV) {
+       throw new FfmpegDecoderException("Invalid output mode.");
+     }
+-    int rst = ffmpegRenderFrame(nativeContext, surface, outputBuffer, outputBuffer.width,
+-        outputBuffer.height);
+-    if (rst == VIDEO_DECODER_ERROR_OTHER) {
+-      throw new FfmpegDecoderException(
+-          "Buffer render error: ");
++    if (!surface.isValid()) {
++      return;
++    }
++    synchronized (nativeContextLock) {
++      if (nativeContext == 0) {
++        throw new FfmpegDecoderException("Decoder is released.");
++      }
++      int result =
++          ffmpegRenderFrame(
++              nativeContext,
++              surface,
++              outputBuffer,
++              outputBuffer.width,
++              outputBuffer.height);
++      if (result != VIDEO_DECODER_SUCCESS && result != VIDEO_DECODER_ERROR_SURFACE) {
++        throw new FfmpegDecoderException("Buffer render failed with error code " + result + ".");
++      }
+     }
+   }
+ 
+@@ -225,6 +312,8 @@ import java.util.List;
+ 
+   private native void ffmpegRelease(long context);
+ 
++  private native void ffmpegReleaseFrame(long context, long frameHandle);
++
+   private native int ffmpegRenderFrame(
+       long context, Surface surface, VideoDecoderOutputBuffer outputBuffer,
+       int displayedWidth,
+@@ -239,7 +328,7 @@ import java.util.List;
+    * @return {@link #VIDEO_DECODER_SUCCESS} if successful, {@link #VIDEO_DECODER_ERROR_OTHER} if an
+    * error occurred.
+    */
+-  private native int ffmpegSendPacket(long context, ByteBuffer encodedData, int length,
++  private native int ffmpegSendPacket(long context, @Nullable ByteBuffer encodedData, int length,
+       long inputTime);
+ 
+   /**
+diff --git a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java
+index 6b087d66ba57fbf7f6cc4e030eb2c5f55a52cb80..972590d79d61d999d01afa4277c48e76298ba67a 100644
+--- a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java
++++ b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java
+@@ -131,7 +131,7 @@ public final class ExperimentalFfmpegVideoRenderer extends DecoderVideoRenderer
+     String mimeType = format.sampleMimeType;
+     if (!FfmpegLibrary.isAvailable() || !MimeTypes.isVideo(mimeType)) {
+       return RendererCapabilities.create(C.FORMAT_UNSUPPORTED_TYPE);
+-    } else if (!FfmpegLibrary.supportsFormat(mimeType)) {
++    } else if (!FfmpegLibrary.supportsFormat(format)) {
+       return RendererCapabilities.create(C.FORMAT_UNSUPPORTED_SUBTYPE);
+     } else if (format.cryptoType != C.CRYPTO_TYPE_NONE) {
+       return RendererCapabilities.create(C.FORMAT_UNSUPPORTED_DRM);
+@@ -164,11 +164,24 @@ public final class ExperimentalFfmpegVideoRenderer extends DecoderVideoRenderer
+   protected void renderOutputBufferToSurface(VideoDecoderOutputBuffer outputBuffer, Surface surface)
+       throws FfmpegDecoderException {
+     if (decoder == null) {
++      outputBuffer.release();
+       throw new FfmpegDecoderException(
+           "Failed to render output buffer to surface: decoder is not initialized.");
+     }
+-    decoder.renderToSurface(outputBuffer, surface);
+-    outputBuffer.release();
++    try {
++      decoder.renderToSurface(outputBuffer, surface);
++    } finally {
++      outputBuffer.release();
++    }
++  }
++
++  @Override
++  protected void releaseDecoder() {
++    try {
++      super.releaseDecoder();
++    } finally {
++      decoder = null;
++    }
+   }
+ 
+   @Override
 diff --git a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java
+index 7dbc569dd137c004cbba1fbdd5524b04b26d4d47..876bb1a4781cc8504cba9ee630859860c32e310a 100644
 --- a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java
 +++ b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java
-@@ -154,6 +154,8 @@ public final class FfmpegLibrary {
+@@ -17,8 +17,10 @@ package androidx.media3.decoder.ffmpeg;
+ 
+ import androidx.annotation.Nullable;
+ import androidx.media3.common.C;
++import androidx.media3.common.Format;
+ import androidx.media3.common.MediaLibraryInfo;
+ import androidx.media3.common.MimeTypes;
++import androidx.media3.common.util.CodecSpecificDataUtil;
+ import androidx.media3.common.util.LibraryLoader;
+ import androidx.media3.common.util.Log;
+ import androidx.media3.common.util.UnstableApi;
+@@ -103,7 +105,17 @@ public final class FfmpegLibrary {
+     if (mimeType == null) {
+       return false;
+     }
+-    @Nullable String codecName = getCodecName(mimeType);
++    return supportsCodec(getCodecName(mimeType));
++  }
++
++  /* package */ static boolean supportsFormat(Format format) {
++    if (!isAvailable()) {
++      return false;
++    }
++    return supportsCodec(getCodecName(format));
++  }
++
++  private static boolean supportsCodec(@Nullable String codecName) {
+     if (codecName == null) {
+       return false;
+     }
+@@ -114,6 +126,15 @@ public final class FfmpegLibrary {
+     return true;
+   }
+ 
++  @Nullable
++  /* package */ static String getCodecName(Format format) {
++    @Nullable String mimeType = format.sampleMimeType;
++    if (MimeTypes.VIDEO_DOLBY_VISION.equals(mimeType)) {
++      mimeType = CodecSpecificDataUtil.getDolbyVisionBaseLayerMimeType(format);
++    }
++    return mimeType == null ? null : getCodecName(mimeType);
++  }
++
+   /**
+    * Returns the name of the FFmpeg decoder that could be used to decode the format, or {@code null}
+    * if it's unsupported.
+@@ -154,21 +175,31 @@ public final class FfmpegLibrary {
          return "pcm_mulaw";
        case MimeTypes.AUDIO_ALAW:
          return "pcm_alaw";
@@ -26,7 +589,9 @@ diff --git a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmp
        case MimeTypes.VIDEO_H264:
          return "h264";
        case MimeTypes.VIDEO_H265:
-@@ -163,12 +165,24 @@ public final class FfmpegLibrary {
+-      case MimeTypes.VIDEO_DOLBY_VISION:
+         return "hevc";
+       case MimeTypes.VIDEO_VP8:
          return "vp8";
        case MimeTypes.VIDEO_VP9:
          return "vp9";
@@ -39,7 +604,6 @@ diff --git a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmp
          return "mpeg2video";
 +      case MimeTypes.VIDEO_MP4V:
 +      case MimeTypes.VIDEO_DIVX:
-+      case MimeTypes.VIDEO_AVI:
 +        return "mpeg4";
 +      case MimeTypes.VIDEO_MP42:
 +        return "msmpeg4v2";
@@ -47,14 +611,20 @@ diff --git a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmp
 +        return "msmpeg4v3";
 +      case MimeTypes.VIDEO_H263:
 +        return "h263";
-+      case MimeTypes.VIDEO_FLV:
-+        return "flv";
 +      case MimeTypes.VIDEO_VC1:
 +        return "vc1";
        default:
          return null;
      }
+@@ -179,4 +210,4 @@ public final class FfmpegLibrary {
+   private static native int ffmpegGetInputBufferPaddingSize();
+ 
+   private static native boolean ffmpegHasDecoder(String codecName);
+-}
+\ No newline at end of file
++}
 diff --git a/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt b/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
+index 5cbcb5b3126b07d38a03092a2fb8b994514ee222..64edb9c6cf7699ea2ec6fad519908996f2ccccda 100644
 --- a/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
 +++ b/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
 @@ -27,11 +27,11 @@ set(ffmpeg_location "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg")
@@ -95,88 +665,1247 @@ diff --git a/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt b/libraries/de
  
  
  include_directories(${ffmpeg_location})
+@@ -80,4 +69,3 @@ target_link_libraries(ffmpegJNI
+ if(ANDROID_ABI STREQUAL "arm64-v8a")
+     target_link_options(ffmpegJNI PRIVATE "-Wl,-Bsymbolic")
+ endif()
+-
 diff --git a/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh b/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
+index 91d79369ae766d49fd63d2f5affe759b8a3eddd5..cc05734e41f396755e5777f4565bb87eaa80956a 100755
 --- a/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
 +++ b/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
-@@ -36,7 +36,7 @@ COMMON_OPTIONS="
+@@ -30,15 +30,14 @@ JOBS="$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)"
+ echo "Using $JOBS jobs for make"
+ COMMON_OPTIONS="
+     --target-os=android
+-    --disable-static
+-    --enable-shared
++    --enable-static
++    --disable-shared
+     --disable-doc
      --disable-programs
      --disable-everything
      --disable-avdevice
 -    --enable-avformat
 +    --disable-avformat
      --enable-swscale
-     --disable-postproc
+-    --disable-postproc
      --disable-avfilter
+     --disable-symver
+     --enable-swresample
 diff --git a/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc b/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
+index afb92bc29a0834eb35977620619a71945bdca457..a68983adf40fef4006b8961af06636dc00382e95 100644
 --- a/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
 +++ b/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
-@@ -508,6 +508,30 @@ struct JniContext {
+@@ -14,11 +14,19 @@
+  * limitations under the License.
+  */
+ #include <android/log.h>
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <cstdint>
++#include <cstring>
+ #include <jni.h>
++#include <mutex>
++#include <new>
+ #include <stdlib.h>
+ #include <thread>
+ #include <android/native_window.h>
+ #include <android/native_window_jni.h>
++#include <vector>
+ #include <libyuv.h>
+ #include <libyuv/scale.h>
+ 
+@@ -90,10 +98,11 @@ static const int AUDIO_DECODER_ERROR_OTHER = -2;
+ // LINT.ThenChange(../java/androidx/media3/decoder/ffmpeg/FfmpegAudioDecoder.java)
+ 
+ static const int VIDEO_DECODER_ERROR_SURFACE = -4;
++static const int VIDEO_DECODER_END_OF_STREAM = -5;
+ static const int VIDEO_DECODER_SUCCESS = 0;
+ static const int VIDEO_DECODER_ERROR_INVALID_DATA = -1;
+ static const int VIDEO_DECODER_ERROR_OTHER = -2;
+-static const int VIDEO_DECODER_ERROR_READ_FRAME = -3;
++static const int VIDEO_DECODER_ERROR_TRY_AGAIN = -3;
+ 
+ static jmethodID growOutputBufferMethod;
+ 
+@@ -310,7 +319,7 @@ AVCodecContext* createContext(JNIEnv* env, const AVCodec* codec,
+     jsize size = env->GetArrayLength(extraData);
+     context->extradata_size = size;
+     context->extradata =
+-        (uint8_t*)av_malloc(size + AV_INPUT_BUFFER_PADDING_SIZE);
++        (uint8_t*)av_mallocz(size + AV_INPUT_BUFFER_PADDING_SIZE);
+     if (!context->extradata) {
+       LOGE("Failed to allocate extradata.");
+       releaseContext(context);
+@@ -436,11 +445,28 @@ int transformError(int errorNumber) {
+                                             : AUDIO_DECODER_ERROR_OTHER;
+ }
+ 
++bool shouldLogError(std::atomic<int64_t>* lastLogMs) {
++  constexpr int64_t kLogIntervalMs = 10000;
++  const int64_t nowMs =
++      std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now().time_since_epoch())
++          .count();
++  int64_t previousLogMs = lastLogMs->load(std::memory_order_relaxed);
++  return (previousLogMs == 0 || nowMs - previousLogMs >= kLogIntervalMs) &&
++      lastLogMs->compare_exchange_strong(
++          previousLogMs, nowMs, std::memory_order_relaxed);
++}
++
+ void logError(const char* functionName, int errorNumber) {
+-  char* buffer = (char*)malloc(ERROR_STRING_BUFFER_LENGTH * sizeof(char));
++  static std::atomic<int64_t> lastInvalidDataLogMs{0};
++  if (errorNumber == AVERROR_INVALIDDATA) {
++    if (!shouldLogError(&lastInvalidDataLogMs)) {
++      return;
++    }
++  }
++  char buffer[ERROR_STRING_BUFFER_LENGTH];
+   av_strerror(errorNumber, buffer, ERROR_STRING_BUFFER_LENGTH);
+   LOGE("Error in %s: %s", functionName, buffer);
+-  free(buffer);
+ }
+ 
+ void releaseContext(AVCodecContext* context) {
+@@ -460,45 +486,146 @@ void releaseContext(AVCodecContext* context) {
+ // Android YUV format. See:
+ // https://developer.android.com/reference/android/graphics/ImageFormat.html#YV12.
+ const int kImageFormatYV12 = 0x32315659;
++// Mirrors C.VIDEO_OUTPUT_MODE_SURFACE_YUV.
++const int kVideoOutputModeSurfaceYuv = 1;
+ 
+ struct JniContext {
++    struct NativeFrame {
++        jlong handle;
++        AVFrame *frame;
++    };
++
+     ~JniContext() {
++        ReleaseAllFrames();
++        if (codecContext) {
++            avcodec_free_context(&codecContext);
++        }
++        if (swsContext) {
++            sws_freeContext(swsContext);
++        }
++        if (renderSwsContext) {
++            sws_freeContext(renderSwsContext);
++        }
++        av_frame_free(&decodeScratchFrame);
++        av_frame_free(&renderScratchFrame);
++        av_packet_free(&packet);
+         if (native_window) {
+             ANativeWindow_release(native_window);
+         }
+     }
+ 
+-    bool MaybeAcquireNativeWindow(JNIEnv *env, jobject new_surface) {
+-        if (surface == new_surface) {
+-            return true;
++    jlong RetainFrame(AVFrame *frame) {
++        std::lock_guard<std::mutex> lock(frame_mutex);
++        const jlong handle = next_frame_handle++;
++        outstanding_frames.push_back({handle, frame});
++        return handle;
++    }
++
++    AVFrame *GetFrame(jlong handle) {
++        std::lock_guard<std::mutex> lock(frame_mutex);
++        for (const NativeFrame &entry: outstanding_frames) {
++            if (entry.handle == handle) {
++                return entry.frame;
++            }
+         }
++        return nullptr;
++    }
++
++    void ReleaseFrame(jlong handle) {
++        AVFrame *frame = nullptr;
++        {
++            std::lock_guard<std::mutex> lock(frame_mutex);
++            for (auto it = outstanding_frames.begin();
++                 it != outstanding_frames.end();
++                 ++it) {
++                if (it->handle == handle) {
++                    frame = it->frame;
++                    outstanding_frames.erase(it);
++                    break;
++                }
++            }
++        }
++        av_frame_free(&frame);
++    }
++
++    void ReleaseAllFrames() {
++        std::lock_guard<std::mutex> lock(frame_mutex);
++        for (NativeFrame &entry: outstanding_frames) {
++            av_frame_free(&entry.frame);
++        }
++        outstanding_frames.clear();
++    }
++
++    void ReleaseNativeWindow(JNIEnv *env) {
+         if (native_window) {
+             ANativeWindow_release(native_window);
++            native_window = nullptr;
++        }
++        if (surface) {
++            env->DeleteGlobalRef(surface);
++            surface = nullptr;
+         }
+         native_window_width = 0;
+         native_window_height = 0;
++    }
++
++    bool ShouldLogSurfaceError() {
++        return shouldLogError(&last_surface_error_log_ms);
++    }
++
++    bool MaybeAcquireNativeWindow(JNIEnv *env, jobject new_surface) {
++        if (new_surface == nullptr) {
++            if (ShouldLogSurfaceError()) {
++                LOGE("Output surface is null.");
++            }
++            return false;
++        }
++        if (surface && env->IsSameObject(surface, new_surface)) {
++            return true;
++        }
++        ReleaseNativeWindow(env);
+         native_window = ANativeWindow_fromSurface(env, new_surface);
+         if (native_window == nullptr) {
+-            LOGE("kJniStatusANativeWindowError");
+-            surface = nullptr;
++            if (ShouldLogSurfaceError()) {
++                LOGE("kJniStatusANativeWindowError");
++            }
++            return false;
++        }
++        surface = env->NewGlobalRef(new_surface);
++        if (surface == nullptr) {
++            ANativeWindow_release(native_window);
++            native_window = nullptr;
++            if (ShouldLogSurfaceError()) {
++                LOGE("Failed to retain output surface.");
++            }
+             return false;
+         }
+-        surface = new_surface;
+         return true;
+     }
+ 
++    void SetOutputBufferTimestamp(
++            JNIEnv *env, jobject output_buffer, const AVFrame *frame) const {
++        if (frame->best_effort_timestamp != AV_NOPTS_VALUE) {
++            env->SetLongField(
++                    output_buffer, pts_field, frame->best_effort_timestamp);
++        }
++    }
++
+     jfieldID data_field;
+-    jfieldID yuvPlanes_field;
+-    jfieldID yuvStrides_field;
+     jfieldID width_field;
+     jfieldID height_field;
+     jfieldID pts_field;
++    jfieldID colorspace_field;
++    jfieldID decoder_private_field;
+     jmethodID init_for_private_frame_method;
+     jmethodID init_for_yuv_frame_method;
+-    jmethodID init_method;
+ 
+-    AVCodecContext *codecContext;
+-    SwsContext *swsContext;
++    AVCodecContext *codecContext = nullptr;
++    SwsContext *swsContext = nullptr;
++    SwsContext *renderSwsContext = nullptr;
++    AVFrame *decodeScratchFrame = nullptr;
++    AVFrame *renderScratchFrame = nullptr;
++    AVPacket *packet = nullptr;
+ 
+     ANativeWindow *native_window = nullptr;
+     jobject surface = nullptr;
+@@ -506,71 +633,48 @@ struct JniContext {
+     int rotate_degree = 0;
+     int native_window_width = 0;
      int native_window_height = 0;
++    std::atomic<int64_t> last_surface_error_log_ms{0};
++
++private:
++    std::mutex frame_mutex;
++    std::vector<NativeFrame> outstanding_frames;
++    jlong next_frame_handle = 1;
  };
  
-+void bobDeinterlaceFrame(AVFrame *frame) {
-+    if (!(frame->flags & AV_FRAME_FLAG_INTERLACED)) return;
-+    int result = av_frame_make_writable(frame);
-+    if (result < 0) {
-+        logError("av_frame_make_writable", result);
+ constexpr int AlignTo16(int value) { return (value + 15) & (~15); }
+ 
++static bool ClearYv12Buffer(const ANativeWindow_Buffer &buffer) {
++    if (buffer.bits == nullptr || buffer.stride <= 0 || buffer.height <= 0) {
++        return false;
++    }
++    auto *const y = reinterpret_cast<uint8_t *>(buffer.bits);
++    const size_t y_length =
++            static_cast<size_t>(buffer.stride) * buffer.height;
++    const int uv_stride = AlignTo16((buffer.stride + 1) / 2);
++    const size_t uv_length =
++            static_cast<size_t>(uv_stride) * ((buffer.height + 1) / 2);
++    std::memset(y, 0, y_length);
++    std::memset(y + y_length, 128, 2 * uv_length);
++    return true;
++}
++
+ /**
+  * Convert AvFrame ColorSpace to exoplayer supported ColorSpace
+  */
+-constexpr int cvt_colorspace(AVColorSpace colorSpace) {
+-    int colorspace = 0;
++static int cvt_colorspace(AVColorSpace colorSpace) {
+     switch (colorSpace) {
+         case AVCOL_SPC_BT470BG:
+         case AVCOL_SPC_SMPTE170M:
+         case AVCOL_SPC_SMPTE240M:
+-            colorspace = 1;
++            return 1;
+         case AVCOL_SPC_BT709:
+-            colorspace = 2;
++            return 2;
+         case AVCOL_SPC_BT2020_NCL:
+         case AVCOL_SPC_BT2020_CL:
+-            colorspace = 3;
++            return 3;
++        default:
++            return 0;
+     }
+-    return colorspace;
+-}
+-
+-/**
+- * Convert other format like(yuv420p10bit) to yuv420p
+- * and scale
+- * @return AVFrame
+- */
+-AVFrame *cvt_format(JniContext *jniContext,
+-                   AVFrame *src,
+-                   AVPixelFormat dst_format,
+-                   int dst_width,
+-                   int dst_height) {
+-    auto src_format = AVPixelFormat(src->format);
+-    auto swsContext = sws_getCachedContext(jniContext->swsContext,
+-                                           src->width, src->height, src_format,
+-                                           dst_width, dst_height, dst_format,
+-                                           SWS_FAST_BILINEAR, NULL, NULL, NULL
+-    );
+-    if (!swsContext) {
+-        LOGE("Failed to allocate swsContext.");
+-        return nullptr;
+-    }
+-
+-    jniContext->swsContext = swsContext;
+-    auto dst = av_frame_alloc();
+-    av_frame_copy_props(dst, src); // copy meta data
+-    dst->width = dst_width;
+-    dst->height = dst_height;
+-    dst->format = dst_format;
+-    auto alloc_result = av_frame_get_buffer(dst, 0);    // allocate buffer
+-    if (alloc_result != 0) {
+-        logError("av_frame_get_buffer", alloc_result);
+-        av_frame_free(&dst);
+-        return nullptr;
+-    }
+-    auto scale_result = sws_scale(swsContext,
+-                                  src->data, src->linesize, 0, src->height,
+-                                  dst->data, dst->linesize);
+-    if (!scale_result) {
+-        logError("sws_scale", scale_result);
+-        av_frame_free(&dst);
+-        return nullptr;
+-    }
+-    return dst;
+ }
+ 
+ /**
+@@ -589,16 +693,306 @@ libyuv::RotationMode cvt_rotate(int degree) {
+     return rotate;
+ }
+ 
++struct I420Buffer {
++    uint8_t *y;
++    int stride_y;
++    uint8_t *u;
++    int stride_u;
++    uint8_t *v;
++    int stride_v;
++};
++
++static bool IsInterlaced(const AVFrame *frame) {
++    return (frame->flags & AV_FRAME_FLAG_INTERLACED) != 0;
++}
++
++static bool IsTopFieldFirst(const AVFrame *frame) {
++    return (frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) != 0;
++}
++
++static void CopyOrBobPlane(const uint8_t *src, int src_stride,
++                           uint8_t *dst, int dst_stride,
++                           int width, int height,
++                           bool interlaced, bool top_field_first) {
++    if (width <= 0 || height <= 0) {
++        return;
++    }
++    if (!interlaced || height == 1) {
++        libyuv::CopyPlane(src, src_stride, dst, dst_stride, width, height);
 +        return;
 +    }
 +
-+    const int field = (frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) ? 0 : 1;
-+    for (int plane = 0; plane < 3; plane++) {
-+        const int width = plane ? (frame->width + 1) / 2 : frame->width;
-+        const int height = plane ? (frame->height + 1) / 2 : frame->height;
-+        const int stride = frame->linesize[plane];
-+        libyuv::CopyPlane(frame->data[plane] + field * stride, stride * 2,
-+                          frame->data[plane] + (1 - field) * stride, stride * 2,
-+                          width, height / 2);
-+        if (field && (height & 1)) {
-+            memcpy(frame->data[plane] + (height - 1) * stride,
-+                   frame->data[plane] + (height - 2) * stride, width);
++    if (top_field_first) {
++        const int field_rows = (height + 1) / 2;
++        libyuv::CopyPlane(src, src_stride * 2,
++                          dst, dst_stride * 2,
++                          width, field_rows);
++
++        const int interpolated_rows = (height - 1) / 2;
++        if (interpolated_rows > 0) {
++            libyuv::InterpolatePlane(src, src_stride * 2,
++                                     src + 2 * src_stride, src_stride * 2,
++                                     dst + dst_stride, dst_stride * 2,
++                                     width, interpolated_rows, 128);
++        }
++        if ((height & 1) == 0) {
++            std::memcpy(dst + (height - 1) * dst_stride,
++                        src + (height - 2) * src_stride,
++                        static_cast<size_t>(width));
++        }
++    } else {
++        const int field_rows = height / 2;
++        libyuv::CopyPlane(src + src_stride, src_stride * 2,
++                          dst + dst_stride, dst_stride * 2,
++                          width, field_rows);
++        std::memcpy(dst, src + src_stride, static_cast<size_t>(width));
++
++        const int interpolated_rows = height / 2 - 1;
++        if (interpolated_rows > 0) {
++            libyuv::InterpolatePlane(src + src_stride, src_stride * 2,
++                                     src + 3 * src_stride, src_stride * 2,
++                                     dst + 2 * dst_stride, dst_stride * 2,
++                                     width, interpolated_rows, 128);
++        }
++        if ((height & 1) != 0) {
++            std::memcpy(dst + (height - 1) * dst_stride,
++                        src + (height - 2) * src_stride,
++                        static_cast<size_t>(width));
 +        }
 +    }
-+    frame->flags &= ~(AV_FRAME_FLAG_INTERLACED | AV_FRAME_FLAG_TOP_FIELD_FIRST);
 +}
 +
- constexpr int AlignTo16(int value) { return (value + 15) & (~15); }
++static void CopyOrBobI420(const AVFrame *frame, const I420Buffer &dst) {
++    const bool interlaced = IsInterlaced(frame);
++    const bool top_field_first = IsTopFieldFirst(frame);
++    const int chroma_width = (frame->width + 1) / 2;
++    const int chroma_height = (frame->height + 1) / 2;
++
++    CopyOrBobPlane(frame->data[0], frame->linesize[0],
++                   dst.y, dst.stride_y,
++                   frame->width, frame->height,
++                   interlaced, top_field_first);
++    CopyOrBobPlane(frame->data[1], frame->linesize[1],
++                   dst.u, dst.stride_u,
++                   chroma_width, chroma_height,
++                   interlaced, top_field_first);
++    CopyOrBobPlane(frame->data[2], frame->linesize[2],
++                   dst.v, dst.stride_v,
++                   chroma_width, chroma_height,
++                   interlaced, top_field_first);
++}
++
++static void BobPlaneInPlace(uint8_t *data, int stride,
++                            int width, int height,
++                            bool top_field_first) {
++    if (width <= 0 || height < 2) {
++        return;
++    }
++
++    if (top_field_first) {
++        const int interpolated_rows = (height - 1) / 2;
++        if (interpolated_rows > 0) {
++            libyuv::InterpolatePlane(data, stride * 2,
++                                     data + 2 * stride, stride * 2,
++                                     data + stride, stride * 2,
++                                     width, interpolated_rows, 128);
++        }
++        if ((height & 1) == 0) {
++            std::memcpy(data + (height - 1) * stride,
++                        data + (height - 2) * stride,
++                        static_cast<size_t>(width));
++        }
++    } else {
++        std::memcpy(data, data + stride, static_cast<size_t>(width));
++        const int interpolated_rows = height / 2 - 1;
++        if (interpolated_rows > 0) {
++            libyuv::InterpolatePlane(data + stride, stride * 2,
++                                     data + 3 * stride, stride * 2,
++                                     data + 2 * stride, stride * 2,
++                                     width, interpolated_rows, 128);
++        }
++        if ((height & 1) != 0) {
++            std::memcpy(data + (height - 1) * stride,
++                        data + (height - 2) * stride,
++                        static_cast<size_t>(width));
++        }
++    }
++}
++
++static void BobI420InPlace(const I420Buffer &buffer,
++                           int width, int height,
++                           bool top_field_first) {
++    BobPlaneInPlace(buffer.y, buffer.stride_y,
++                    width, height, top_field_first);
++    BobPlaneInPlace(buffer.u, buffer.stride_u,
++                    (width + 1) / 2, (height + 1) / 2,
++                    top_field_first);
++    BobPlaneInPlace(buffer.v, buffer.stride_v,
++                    (width + 1) / 2, (height + 1) / 2,
++                    top_field_first);
++}
++
++static bool ConvertToI420(SwsContext **sws_context,
++                          const AVFrame *source,
++                          const I420Buffer &destination) {
++    *sws_context = sws_getCachedContext(
++            *sws_context,
++            source->width, source->height,
++            static_cast<AVPixelFormat>(source->format),
++            source->width, source->height,
++            AV_PIX_FMT_YUV420P,
++            SWS_FAST_BILINEAR,
++            nullptr, nullptr, nullptr);
++    if (*sws_context == nullptr) {
++        LOGE("Failed to allocate swsContext.");
++        return false;
++    }
++
++    uint8_t *dst_data[4] = {
++            destination.y, destination.u, destination.v, nullptr};
++    int dst_linesize[4] = {
++            destination.stride_y, destination.stride_u,
++            destination.stride_v, 0};
++    const int result = sws_scale(
++            *sws_context,
++            source->data, source->linesize,
++            0, source->height,
++            dst_data, dst_linesize);
++    if (result != source->height) {
++        if (result < 0) {
++            logError("sws_scale", result);
++        } else {
++            LOGE("sws_scale returned %d rows, expected %d.", result, source->height);
++        }
++        return false;
++    }
++    return true;
++}
++
++static bool EnsureI420ScratchFrame(AVFrame **scratch_frame,
++                                   int width, int height) {
++    if (*scratch_frame != nullptr &&
++        ((*scratch_frame)->format != AV_PIX_FMT_YUV420P ||
++         (*scratch_frame)->width != width ||
++         (*scratch_frame)->height != height)) {
++        av_frame_free(scratch_frame);
++    }
++
++    if (*scratch_frame == nullptr) {
++        AVFrame *frame = av_frame_alloc();
++        if (frame == nullptr) {
++            LOGE("Failed to allocate scratch frame.");
++            return false;
++        }
++        frame->format = AV_PIX_FMT_YUV420P;
++        frame->width = width;
++        frame->height = height;
++        const int result = av_frame_get_buffer(frame, 32);
++        if (result < 0) {
++            logError("av_frame_get_buffer", result);
++            av_frame_free(&frame);
++            return false;
++        }
++        *scratch_frame = frame;
++    }
++
++    const int result = av_frame_make_writable(*scratch_frame);
++    if (result < 0) {
++        logError("av_frame_make_writable", result);
++        return false;
++    }
++    return true;
++}
++
++static I420Buffer GetI420Buffer(AVFrame *frame) {
++    return {
++            frame->data[0], frame->linesize[0],
++            frame->data[1], frame->linesize[1],
++            frame->data[2], frame->linesize[2]};
++}
++
++static bool WriteFrameToI420(JniContext *jniContext,
++                             const AVFrame *source,
++                             const I420Buffer &destination,
++                             bool render_thread) {
++    const bool source_is_i420 =
++            source->format == AV_PIX_FMT_YUV420P;
++    const bool interlaced = IsInterlaced(source);
++    const bool top_field_first = IsTopFieldFirst(source);
++    SwsContext **const sws_context = render_thread
++            ? &jniContext->renderSwsContext
++            : &jniContext->swsContext;
++
++    if (jniContext->rotate_degree == 0) {
++        if (source_is_i420) {
++            CopyOrBobI420(source, destination);
++        } else {
++            if (!ConvertToI420(sws_context, source, destination)) {
++                return false;
++            }
++            if (interlaced) {
++                BobI420InPlace(destination, source->width, source->height,
++                               top_field_first);
++            }
++        }
++        return true;
++    }
++
++    const AVFrame *rotate_source = source;
++    AVFrame **const scratch_frame = render_thread
++            ? &jniContext->renderScratchFrame
++            : &jniContext->decodeScratchFrame;
++    if (!source_is_i420 || interlaced) {
++        if (!EnsureI420ScratchFrame(scratch_frame,
++                                    source->width, source->height)) {
++            return false;
++        }
++        const I420Buffer scratch = GetI420Buffer(*scratch_frame);
++        if (source_is_i420) {
++            CopyOrBobI420(source, scratch);
++        } else {
++            if (!ConvertToI420(sws_context, source, scratch)) {
++                return false;
++            }
++            if (interlaced) {
++                BobI420InPlace(scratch, source->width, source->height,
++                               top_field_first);
++            }
++        }
++        rotate_source = *scratch_frame;
++    }
++
++    const int rotate_result = libyuv::I420Rotate(
++            rotate_source->data[0], rotate_source->linesize[0],
++            rotate_source->data[1], rotate_source->linesize[1],
++            rotate_source->data[2], rotate_source->linesize[2],
++            destination.y, destination.stride_y,
++            destination.u, destination.stride_u,
++            destination.v, destination.stride_v,
++            rotate_source->width, rotate_source->height,
++            cvt_rotate(jniContext->rotate_degree));
++    if (rotate_result != 0) {
++        LOGE("I420Rotate failed: %d", rotate_result);
++        return false;
++    }
++    return true;
++}
++
+ JniContext *createVideoContext(JNIEnv *env,
+                                const AVCodec *codec,
+                                jbyteArray extraData,
+                                jint threads,
+                                jint degree) {
+     JniContext *jniContext = new(std::nothrow)JniContext();
++    if (jniContext == nullptr) {
++        LOGE("Failed to allocate JNI context.");
++        return NULL;
++    }
  
- /**
-@@ -752,15 +776,16 @@ VIDEO_DECODER_FUNC(jint, ffmpegReceiveFrame, jlong jContext, jint outputMode, jo
+     AVCodecContext *codecContext = avcodec_alloc_context3(codec);
+     if (!codecContext) {
+         LOGE("Failed to allocate context.");
++        delete jniContext;
+         return NULL;
      }
  
-     // Use swscale to cvt format to YUV420P
--    AVFrame *cvt_frame = cvt_format(jniContext, raw_frame, AV_PIX_FMT_YUV420P, raw_frame->width, raw_frame->height);
--    if (cvt_frame == nullptr) {
-+    AVFrame *cvt_frame = raw_frame;
-+    if (raw_frame->format != AV_PIX_FMT_YUV420P) {
-+        cvt_frame = cvt_format(jniContext, raw_frame, AV_PIX_FMT_YUV420P, raw_frame->width, raw_frame->height);
-         av_frame_free(&raw_frame);
+@@ -608,10 +1002,11 @@ JniContext *createVideoContext(JNIEnv *env,
+     if (extraData) {
+         jsize size = env->GetArrayLength(extraData);
+         codecContext->extradata_size = size;
+-        codecContext->extradata = (uint8_t *) av_malloc(size + AV_INPUT_BUFFER_PADDING_SIZE);
++        codecContext->extradata = (uint8_t *) av_mallocz(size + AV_INPUT_BUFFER_PADDING_SIZE);
+         if (!codecContext->extradata) {
+             LOGE("Failed to allocate extradata.");
+             releaseContext(codecContext);
++            delete jniContext;
+             return NULL;
+         }
+         env->GetByteArrayRegion(extraData, 0, size, (jbyte *) codecContext->extradata);
+@@ -623,10 +1018,16 @@ JniContext *createVideoContext(JNIEnv *env,
+     codecContext->thread_count = threads;
+     codecContext->thread_type = FF_THREAD_FRAME;
+     codecContext->err_recognition = AV_EF_IGNORE_ERR;
++    codecContext->flags |= AV_CODEC_FLAG_OUTPUT_CORRUPT;
++    codecContext->flags2 |= AV_CODEC_FLAG2_SHOW_ALL;
++    codecContext->error_concealment =
++            FF_EC_GUESS_MVS | FF_EC_DEBLOCK | FF_EC_FAVOR_INTER;
++    codecContext->discard_damaged_percentage = 100;
+     int result = avcodec_open2(codecContext, codec, NULL);
+     if (result < 0) {
+         logError("avcodec_open2", result);
+         releaseContext(codecContext);
++        delete jniContext;
+         return NULL;
+     }
+ 
+@@ -638,17 +1039,15 @@ JniContext *createVideoContext(JNIEnv *env,
+     jniContext->width_field = env->GetFieldID(outputBufferClass, "width", "I");
+     jniContext->height_field = env->GetFieldID(outputBufferClass, "height", "I");
+     jniContext->pts_field = env->GetFieldID(outputBufferClass, "timeUs", "J");
++    jniContext->colorspace_field =
++            env->GetFieldID(outputBufferClass, "colorspace", "I");
++    jniContext->decoder_private_field =
++            env->GetFieldID(outputBufferClass, "decoderPrivate", "J");
+ 
+-
+-    jniContext->yuvPlanes_field =
+-            env->GetFieldID(outputBufferClass, "yuvPlanes", "[Ljava/nio/ByteBuffer;");
+-    jniContext->yuvStrides_field = env->GetFieldID(outputBufferClass, "yuvStrides", "[I");
+     jniContext->init_for_private_frame_method =
+             env->GetMethodID(outputBufferClass, "initForPrivateFrame", "(II)V");
+     jniContext->init_for_yuv_frame_method =
+             env->GetMethodID(outputBufferClass, "initForYuvFrame", "(IIIII)Z");
+-    jniContext->init_method =
+-            env->GetMethodID(outputBufferClass, "init", "(JILjava/nio/ByteBuffer;)V");
+ 
+     return jniContext;
+ }
+@@ -678,218 +1077,324 @@ VIDEO_DECODER_FUNC(jlong, ffmpegReset, jlong jContext) {
+ }
+ 
+ VIDEO_DECODER_FUNC(void, ffmpegRelease, jlong jContext) {
+-    JniContext *const jniContext = reinterpret_cast<JniContext *>(jContext);
+-    AVCodecContext *context = jniContext->codecContext;
+-    SwsContext *swsContext = jniContext->swsContext;
+-
+-    if (context) {
+-        avcodec_free_context(&context);
+-        jniContext->codecContext = NULL;
++    if (!jContext) {
++        return;
+     }
++    JniContext *const jniContext = reinterpret_cast<JniContext *>(jContext);
++    jniContext->ReleaseNativeWindow(env);
++    delete jniContext;
++}
+ 
+-    if (swsContext) {
+-        sws_freeContext(swsContext);
+-        jniContext->swsContext = NULL;
++VIDEO_DECODER_FUNC(void, ffmpegReleaseFrame, jlong jContext, jlong frameHandle) {
++    if (!jContext || !frameHandle) {
++        return;
+     }
++    JniContext *const jniContext = reinterpret_cast<JniContext *>(jContext);
++    jniContext->ReleaseFrame(frameHandle);
+ }
+ 
+ 
+ VIDEO_DECODER_FUNC(jint, ffmpegSendPacket, jlong jContext, jobject encodedData,
+                    jint length, jlong inputTimeUs) {
+-    JniContext *const jniContext = reinterpret_cast<JniContext *>(jContext);
+-    AVCodecContext *avContext = jniContext->codecContext;
+-
+-    uint8_t *inputBuffer = (uint8_t *) env->GetDirectBufferAddress(encodedData);
+-    auto packet = av_packet_alloc();
+-    packet->data = inputBuffer;
+-    packet->size = length;
+-    packet->pts = inputTimeUs;
++    if (!jContext || length < 0 || (encodedData == nullptr && length != 0)) {
++        LOGE("Invalid video packet arguments.");
++        return VIDEO_DECODER_ERROR_OTHER;
 +    }
-+    if (cvt_frame == nullptr) {
-         LOGW("Convert To YUV420P failed.");
+ 
+-    int result = 0;
+-    // Queue input data.
+-    result = avcodec_send_packet(avContext, packet);
+-    av_packet_free(&packet);
+-    if (result) {
+-        logError("avcodec_send_packet", result);
+-        if (result == AVERROR_INVALIDDATA) {
+-            // need more data
+-            return VIDEO_DECODER_ERROR_INVALID_DATA;
+-        } else if (result == AVERROR(EAGAIN)) {
+-            // need read frame
+-            return VIDEO_DECODER_ERROR_READ_FRAME;
+-        } else {
++    JniContext *const jniContext = reinterpret_cast<JniContext *>(jContext);
++    AVCodecContext *const avContext = jniContext->codecContext;
++    int result;
++    if (encodedData == nullptr) {
++        result = avcodec_send_packet(avContext, nullptr);
++    } else {
++        auto *const inputBuffer = reinterpret_cast<uint8_t *>(
++                env->GetDirectBufferAddress(encodedData));
++        const jlong inputCapacity = env->GetDirectBufferCapacity(encodedData);
++        if (inputBuffer == nullptr || inputCapacity < 0 ||
++            static_cast<jlong>(length) + AV_INPUT_BUFFER_PADDING_SIZE >
++                    inputCapacity) {
++            LOGE("Invalid encoded input buffer: capacity=%lld, required=%lld.",
++                 static_cast<long long>(inputCapacity),
++                 static_cast<long long>(length) + AV_INPUT_BUFFER_PADDING_SIZE);
+             return VIDEO_DECODER_ERROR_OTHER;
+         }
++        std::memset(inputBuffer + length, 0, AV_INPUT_BUFFER_PADDING_SIZE);
++
++        if (jniContext->packet == nullptr) {
++            jniContext->packet = av_packet_alloc();
++            if (jniContext->packet == nullptr) {
++                LOGE("Failed to allocate packet.");
++                return VIDEO_DECODER_ERROR_OTHER;
++            }
++        }
++
++        AVPacket *const packet = jniContext->packet;
++        av_packet_unref(packet);
++        packet->data = inputBuffer;
++        packet->size = length;
++        packet->pts = inputTimeUs;
++
++        result = avcodec_send_packet(avContext, packet);
++        av_packet_unref(packet);
++    }
++    if (result == 0) {
++        return VIDEO_DECODER_SUCCESS;
++    } else if (result == AVERROR(EAGAIN)) {
++        return VIDEO_DECODER_ERROR_TRY_AGAIN;
++    } else if (result == AVERROR_EOF) {
++        return VIDEO_DECODER_END_OF_STREAM;
+     }
+-    return result;
++    logError("avcodec_send_packet", result);
++    return result == AVERROR_INVALIDDATA
++            ? VIDEO_DECODER_ERROR_INVALID_DATA
++            : VIDEO_DECODER_ERROR_OTHER;
+ }
+ 
+ VIDEO_DECODER_FUNC(jint, ffmpegReceiveFrame, jlong jContext, jint outputMode, jobject jOutputBuffer,
+                    jboolean decodeOnly) {
+     JniContext *const jniContext = reinterpret_cast<JniContext *>(jContext);
+     AVCodecContext *avContext = jniContext->codecContext;
+-    int result = 0;
+     AVFrame *raw_frame = av_frame_alloc();
+     if (!raw_frame) {
+         LOGE("Failed to allocate output frame.");
          return VIDEO_DECODER_ERROR_OTHER;
      }
+ 
+-    result = avcodec_receive_frame(avContext, raw_frame);
++    const int result = avcodec_receive_frame(avContext, raw_frame);
+ 
+-    if (decodeOnly || result == AVERROR(EAGAIN)) {
+-        // This is not an error. The input data was decode-only or no displayable
+-        // frames are available.
++    if (result == AVERROR(EAGAIN)) {
+         av_frame_free(&raw_frame);
+-        return VIDEO_DECODER_ERROR_INVALID_DATA;
++        return VIDEO_DECODER_ERROR_TRY_AGAIN;
++    }
++    if (result == AVERROR_EOF) {
++        av_frame_free(&raw_frame);
++        return VIDEO_DECODER_END_OF_STREAM;
+     }
 -
+-    // Some error!
+     if (result != 0) {
+         av_frame_free(&raw_frame);
+         logError("avcodec_receive_frame", result);
+-        return VIDEO_DECODER_ERROR_OTHER;
++        return result == AVERROR_INVALIDDATA
++                ? VIDEO_DECODER_ERROR_INVALID_DATA
++                : VIDEO_DECODER_ERROR_OTHER;
+     }
+-
+-    // Use swscale to cvt format to YUV420P
+-    AVFrame *cvt_frame = cvt_format(jniContext, raw_frame, AV_PIX_FMT_YUV420P, raw_frame->width, raw_frame->height);
+-    if (cvt_frame == nullptr) {
++    if (decodeOnly) {
+         av_frame_free(&raw_frame);
+-        LOGW("Convert To YUV420P failed.");
+-        return VIDEO_DECODER_ERROR_OTHER;
++        return VIDEO_DECODER_ERROR_INVALID_DATA;
+     }
+ 
 -    // Convert Success! free the raw frame!
 -    av_frame_free(&raw_frame);
-+    bobDeinterlaceFrame(cvt_frame);
+-
+-    int width = env->GetIntField(jOutputBuffer, jniContext->width_field);
+-    int height = env->GetIntField(jOutputBuffer, jniContext->height_field);
+-
+-    auto dst_width = cvt_frame->width;
+-    auto dst_height = cvt_frame->height;
+-    int output_width = dst_width;
+-    int output_height = dst_height;
++    int output_width = raw_frame->width;
++    int output_height = raw_frame->height;
++    if (jniContext->rotate_degree == 90 ||
++        jniContext->rotate_degree == 270) {
++        std::swap(output_width, output_height);
++    }
  
-     int width = env->GetIntField(jOutputBuffer, jniContext->width_field);
-     int height = env->GetIntField(jOutputBuffer, jniContext->height_field);
-@@ -787,8 +812,6 @@ VIDEO_DECODER_FUNC(jint, ffmpegReceiveFrame, jlong jContext, jint outputMode, jo
-         init_result = env->CallBooleanMethod(jOutputBuffer, jniContext->init_for_yuv_frame_method,
-                                              output_width, output_height, stride_y, stride_uv, color_space);
-         LOGE("init_for_yuv_frame_method! wh [%d,%d], buffer wh [%d,%d]", output_width, output_height, width, height);
+-    // adjust rotate degree
+-    if (jniContext->rotate_degree == 90 || jniContext->rotate_degree == 270) {
+-        output_width = dst_height;
+-        output_height = dst_width;
++    // C.VIDEO_OUTPUT_MODE_SURFACE_YUV. Keep the decoded AVFrame native and
++    // defer conversion, deinterlacing and rotation until the frame is rendered.
++    if (outputMode == kVideoOutputModeSurfaceYuv) {
++        env->CallVoidMethod(jOutputBuffer,
++                            jniContext->init_for_private_frame_method,
++                            output_width, output_height);
++        if (env->ExceptionCheck()) {
++            av_frame_free(&raw_frame);
++            return VIDEO_DECODER_ERROR_OTHER;
++        }
++        const jlong frame_handle = jniContext->RetainFrame(raw_frame);
++        jniContext->SetOutputBufferTimestamp(env, jOutputBuffer, raw_frame);
++        env->SetLongField(
++                jOutputBuffer,
++                jniContext->decoder_private_field,
++                frame_handle);
++        return VIDEO_DECODER_SUCCESS;
+     }
+-    // adjust ColorSpace
+-    int color_space = cvt_colorspace(cvt_frame->colorspace);
+ 
+-    int stride_y = output_width;
+-    int stride_uv = (output_width + 1) / 2;
++    const int stride_y = output_width;
++    const int stride_uv = (output_width + 1) / 2;
++    const int color_space = cvt_colorspace(raw_frame->colorspace);
++    const int width = env->GetIntField(jOutputBuffer, jniContext->width_field);
++    const int height = env->GetIntField(jOutputBuffer, jniContext->height_field);
++    const int current_color_space =
++            env->GetIntField(jOutputBuffer, jniContext->colorspace_field);
++    jobject data_object =
++            env->GetObjectField(jOutputBuffer, jniContext->data_field);
+ 
+     jboolean init_result = JNI_TRUE;
+-    if (width != output_width && height != output_height) {
+-        // init data
+-        init_result = env->CallBooleanMethod(jOutputBuffer, jniContext->init_for_yuv_frame_method,
+-                                             output_width, output_height, stride_y, stride_uv, color_space);
+-        LOGE("init_for_yuv_frame_method! wh [%d,%d], buffer wh [%d,%d]", output_width, output_height, width, height);
 -    } else {
 -        env->SetLongField(jOutputBuffer, jniContext->pts_field, cvt_frame->pts);
++    if (width != output_width ||
++        height != output_height ||
++        current_color_space != color_space ||
++        data_object == nullptr) {
++        if (data_object != nullptr) {
++            env->DeleteLocalRef(data_object);
++            data_object = nullptr;
++        }
++        init_result = env->CallBooleanMethod(
++                jOutputBuffer,
++                jniContext->init_for_yuv_frame_method,
++                output_width, output_height,
++                stride_y, stride_uv, color_space);
++        if (!env->ExceptionCheck() && init_result) {
++            data_object =
++                    env->GetObjectField(jOutputBuffer, jniContext->data_field);
++        }
      }
  
      if (env->ExceptionCheck()) {
-@@ -800,6 +823,7 @@ VIDEO_DECODER_FUNC(jint, ffmpegReceiveFrame, jlong jContext, jint outputMode, jo
-         av_frame_free(&cvt_frame);
+-        av_frame_free(&cvt_frame);
+-        // Exception is thrown in Java when returning from the native call.
++        av_frame_free(&raw_frame);
          return VIDEO_DECODER_ERROR_OTHER;
      }
-+    env->SetLongField(jOutputBuffer, jniContext->pts_field, cvt_frame->pts);
+-    if (!init_result) {
+-        av_frame_free(&cvt_frame);
++    if (!init_result || data_object == nullptr) {
++        av_frame_free(&raw_frame);
+         return VIDEO_DECODER_ERROR_OTHER;
+     }
  
-     auto data_object = env->GetObjectField(jOutputBuffer, jniContext->data_field);
-     auto *data = reinterpret_cast<uint8_t *>(env->GetDirectBufferAddress(data_object));
+-    auto data_object = env->GetObjectField(jOutputBuffer, jniContext->data_field);
+-    auto *data = reinterpret_cast<uint8_t *>(env->GetDirectBufferAddress(data_object));
+-
+-    const int32_t height_uv = (output_height + 1) / 2;
+-    const uint64_t length_y = stride_y * output_height;
+-    const uint64_t length_uv = stride_uv * height_uv;
++    const size_t length_y =
++            static_cast<size_t>(stride_y) * output_height;
++    const size_t length_uv =
++            static_cast<size_t>(stride_uv) * ((output_height + 1) / 2);
++    const size_t required_size = length_y + 2 * length_uv;
++    const jlong data_capacity = env->GetDirectBufferCapacity(data_object);
++    auto *data = reinterpret_cast<uint8_t *>(
++            env->GetDirectBufferAddress(data_object));
++    if (data == nullptr || data_capacity < 0 ||
++        static_cast<size_t>(data_capacity) < required_size) {
++        env->DeleteLocalRef(data_object);
++        av_frame_free(&raw_frame);
++        LOGE("Invalid output buffer: capacity=%lld, required=%zu.",
++             static_cast<long long>(data_capacity), required_size);
++        return VIDEO_DECODER_ERROR_OTHER;
++    }
+ 
+-    // rotate YUV data & copy to OutputBuffer
+-    libyuv::RotationMode rotate = cvt_rotate(jniContext->rotate_degree);
+-    libyuv::I420Rotate(
+-            cvt_frame->data[0], cvt_frame->linesize[0],
+-            cvt_frame->data[1], cvt_frame->linesize[1],
+-            cvt_frame->data[2], cvt_frame->linesize[2],
++    const I420Buffer destination = {
+             data, stride_y,
+             data + length_y, stride_uv,
+-            data + length_y + length_uv, stride_uv,
+-            cvt_frame->width, cvt_frame->height, rotate
+-    );
+-    av_frame_free(&cvt_frame);
+-    return result;
++            data + length_y + length_uv, stride_uv};
++    const bool write_result =
++            WriteFrameToI420(jniContext, raw_frame, destination,
++                             /* render_thread= */ false);
++    env->DeleteLocalRef(data_object);
++    jniContext->SetOutputBufferTimestamp(env, jOutputBuffer, raw_frame);
++    av_frame_free(&raw_frame);
++    return write_result ? VIDEO_DECODER_SUCCESS : VIDEO_DECODER_ERROR_INVALID_DATA;
+ }
+ 
+ VIDEO_DECODER_FUNC(jint, ffmpegRenderFrame, jlong jContext, jobject jSurface,
+                    jobject jOutputBuffer, jint displayedWidth, jint displayedHeight) {
+     JniContext *const jniContext = reinterpret_cast<JniContext *>(jContext);
+-    if (!jniContext->MaybeAcquireNativeWindow(env, jSurface)) {
++    const jlong frame_handle =
++            env->GetLongField(jOutputBuffer, jniContext->decoder_private_field);
++    AVFrame *const frame = jniContext->GetFrame(frame_handle);
++    if (frame == nullptr) {
++        LOGE("Output buffer does not contain a native frame.");
+         return VIDEO_DECODER_ERROR_OTHER;
+     }
+ 
++    int output_width = frame->width;
++    int output_height = frame->height;
++    if (jniContext->rotate_degree == 90 ||
++        jniContext->rotate_degree == 270) {
++        std::swap(output_width, output_height);
++    }
++    if (displayedWidth != output_width || displayedHeight != output_height) {
++        LOGW("Ignoring stale output dimensions [%d,%d]; frame is [%d,%d].",
++             displayedWidth, displayedHeight, output_width, output_height);
++        displayedWidth = output_width;
++        displayedHeight = output_height;
++    }
++
++    const auto surface_error = [&]() {
++        jniContext->ReleaseNativeWindow(env);
++        return VIDEO_DECODER_ERROR_SURFACE;
++    };
++    if (!jniContext->MaybeAcquireNativeWindow(env, jSurface)) {
++        return surface_error();
++    }
++
+     if (jniContext->native_window_width != displayedWidth ||
+         jniContext->native_window_height != displayedHeight) {
+-        int rst = ANativeWindow_setBuffersGeometry(
++        const int result = ANativeWindow_setBuffersGeometry(
+                 jniContext->native_window,
+                 displayedWidth,
+                 displayedHeight,
+                 kImageFormatYV12);
+-        if (rst) {
+-            LOGE("kJniStatusANativeWindowError ANativeWindow_setBuffersGeometry rst [%d]", rst);
+-            return VIDEO_DECODER_ERROR_OTHER;
++        if (result) {
++            if (jniContext->ShouldLogSurfaceError()) {
++                LOGE("kJniStatusANativeWindowError ANativeWindow_setBuffersGeometry rst [%d]", result);
++            }
++            return surface_error();
+         }
+         jniContext->native_window_width = displayedWidth;
+         jniContext->native_window_height = displayedHeight;
+     }
+ 
+     ANativeWindow_Buffer native_window_buffer;
+-    int result = ANativeWindow_lock(jniContext->native_window, &native_window_buffer, nullptr);
+-    if (result == -19) {
+-        // Surface: dequeueBuffer failed (No such device)
+-        jniContext->surface = nullptr;
+-        return VIDEO_DECODER_ERROR_SURFACE;
+-    } else if (result || native_window_buffer.bits == nullptr) {
+-        LOGE("kJniStatusANativeWindowError ANativeWindow_lock rst [%d]", result);
+-        return VIDEO_DECODER_ERROR_OTHER;
++    const int lock_result = ANativeWindow_lock(
++            jniContext->native_window, &native_window_buffer, nullptr);
++    if (lock_result || native_window_buffer.bits == nullptr) {
++        if (jniContext->ShouldLogSurfaceError()) {
++            LOGE("kJniStatusANativeWindowError ANativeWindow_lock rst [%d]", lock_result);
++        }
++        if (lock_result == 0) {
++            ANativeWindow_unlockAndPost(jniContext->native_window);
++        }
++        return surface_error();
+     }
+ 
+-    auto data_object = env->GetObjectField(jOutputBuffer, jniContext->data_field);
+-    auto *data = reinterpret_cast<uint8_t *>(env->GetDirectBufferAddress(data_object));
+-
+-    auto frame_width = env->GetIntField(jOutputBuffer, jniContext->width_field);
+-    auto frame_height = env->GetIntField(jOutputBuffer, jniContext->height_field);
+-    int src_stride_y = frame_width;
+-    int src_stride_uv = (frame_width + 1) / 2;
+-    const int32_t height_uv = (frame_height + 1) / 2;
+-    const uint64_t src_length_y = src_stride_y * frame_height;
+-    const uint64_t src_length_uv = src_stride_uv * height_uv;
+-
+-    const int window_y_plane_size = native_window_buffer.stride * native_window_buffer.height;
+-    const int32_t window_uv_plane_height = (native_window_buffer.height + 1) / 2;
+-    const int window_uv_plane_stride = AlignTo16(native_window_buffer.stride / 2);
+-    const int window_v_plane_height = std::min(window_uv_plane_height, native_window_buffer.height);
+-    const int window_v_plane_size = window_v_plane_height * window_uv_plane_stride;
+-    const auto window_bits = reinterpret_cast<uint8_t *>(native_window_buffer.bits);
+-
+-    libyuv::I420Copy(
+-            data, src_stride_y,
+-            data + src_length_y, src_stride_uv,
+-            data + src_length_y + src_length_uv, src_stride_uv,
+-            window_bits, native_window_buffer.stride,
+-            window_bits + window_y_plane_size + window_v_plane_size, window_uv_plane_stride,
+-            window_bits + window_y_plane_size, window_uv_plane_stride,
+-            native_window_buffer.width, native_window_buffer.height
+-    );
+-    int rst = ANativeWindow_unlockAndPost(jniContext->native_window);
+-    if (rst) {
+-        LOGE("kJniStatusANativeWindowError ANativeWindow_unlockAndPost rst [%d]", rst);
+-        return VIDEO_DECODER_ERROR_OTHER;
++    if (native_window_buffer.width < output_width ||
++        native_window_buffer.height < output_height) {
++        if (jniContext->ShouldLogSurfaceError()) {
++            LOGE("Native window buffer [%d,%d] is smaller than frame [%d,%d].",
++                 native_window_buffer.width, native_window_buffer.height,
++                 output_width, output_height);
++        }
++        ClearYv12Buffer(native_window_buffer);
++        ANativeWindow_unlockAndPost(jniContext->native_window);
++        return surface_error();
++    }
++
++    auto *const window_y =
++            reinterpret_cast<uint8_t *>(native_window_buffer.bits);
++    const int window_stride_y = native_window_buffer.stride;
++    const int window_stride_uv = AlignTo16((window_stride_y + 1) / 2);
++    const int window_height_uv = (native_window_buffer.height + 1) / 2;
++    if (window_stride_y <= 0 ||
++        window_stride_y < output_width ||
++        window_stride_uv < (output_width + 1) / 2) {
++        if (jniContext->ShouldLogSurfaceError()) {
++            LOGE("Invalid YV12 strides: Y=%d, UV=%d, width=%d.",
++                 window_stride_y, window_stride_uv, output_width);
++        }
++        ClearYv12Buffer(native_window_buffer);
++        ANativeWindow_unlockAndPost(jniContext->native_window);
++        return surface_error();
++    }
++    const size_t window_length_y =
++            static_cast<size_t>(window_stride_y) * native_window_buffer.height;
++    const size_t window_length_uv =
++            static_cast<size_t>(window_stride_uv) * window_height_uv;
++    // Android YV12 is laid out as Y, V, U. I420 APIs take semantic Y, U, V.
++    uint8_t *const window_v = window_y + window_length_y;
++    uint8_t *const window_u = window_v + window_length_uv;
++    const I420Buffer destination = {
++            window_y, window_stride_y,
++            window_u, window_stride_uv,
++            window_v, window_stride_uv};
++
++    const bool write_result =
++            WriteFrameToI420(jniContext, frame, destination,
++                             /* render_thread= */ true);
++    if (!write_result) {
++        // A locked native window cannot be cancelled. Post a valid black frame
++        // instead of exposing partially converted YUV data.
++        ClearYv12Buffer(native_window_buffer);
++    }
++    const int post_result =
++            ANativeWindow_unlockAndPost(jniContext->native_window);
++    if (post_result) {
++        if (jniContext->ShouldLogSurfaceError()) {
++            LOGE("kJniStatusANativeWindowError ANativeWindow_unlockAndPost rst [%d]", post_result);
++        }
++        return surface_error();
+     }
+ 
+     return VIDEO_DECODER_SUCCESS;
+ }
+-
+-
+diff --git a/libraries/decoder_ffmpeg/src/test/java/androidx/media3/decoder/ffmpeg/FfmpegLibraryTest.java b/libraries/decoder_ffmpeg/src/test/java/androidx/media3/decoder/ffmpeg/FfmpegLibraryTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3189ce5e1b2f99a3acdb6d047011dbdbfd869932
+--- /dev/null
++++ b/libraries/decoder_ffmpeg/src/test/java/androidx/media3/decoder/ffmpeg/FfmpegLibraryTest.java
+@@ -0,0 +1,53 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package androidx.media3.decoder.ffmpeg;
++
++import static com.google.common.truth.Truth.assertThat;
++
++import androidx.media3.common.Format;
++import androidx.media3.common.MimeTypes;
++import androidx.test.ext.junit.runners.AndroidJUnit4;
++import org.junit.Test;
++import org.junit.runner.RunWith;
++
++/** Unit tests for {@link FfmpegLibrary}. */
++@RunWith(AndroidJUnit4.class)
++public final class FfmpegLibraryTest {
++
++  @Test
++  public void getCodecName_usesDolbyVisionBaseLayerAndRejectsContainers() {
++    Format hevcDolbyVision =
++        new Format.Builder()
++            .setSampleMimeType(MimeTypes.VIDEO_DOLBY_VISION)
++            .setCodecs("dvh1.05.05")
++            .build();
++    Format h264DolbyVision =
++        new Format.Builder()
++            .setSampleMimeType(MimeTypes.VIDEO_DOLBY_VISION)
++            .setCodecs("dvav.09.01")
++            .build();
++    Format av1DolbyVision =
++        new Format.Builder()
++            .setSampleMimeType(MimeTypes.VIDEO_DOLBY_VISION)
++            .setCodecs("dav1.10.09")
++            .build();
++
++    assertThat(FfmpegLibrary.getCodecName(hevcDolbyVision)).isEqualTo("hevc");
++    assertThat(FfmpegLibrary.getCodecName(h264DolbyVision)).isEqualTo("h264");
++    assertThat(FfmpegLibrary.getCodecName(av1DolbyVision)).isNull();
++    assertThat(FfmpegLibrary.getCodecName(MimeTypes.VIDEO_FLV)).isNull();
++  }
++}
