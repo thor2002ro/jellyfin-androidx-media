@@ -15,7 +15,7 @@ treated as an official Jellyfin or AndroidX Media release.
 - Adds Microsoft GSM audio mapping and keeps the FFmpeg build limited to the
   codecs advertised by the decoder.
 - Enables FFmpeg frame-threaded video decoding.
-- Builds FFmpeg 8.1 as static libraries for `armeabi-v7a`, `arm64-v8a`, `x86`,
+- Builds the FFmpeg submodule as static libraries for `armeabi-v7a`, `arm64-v8a`, `x86`,
   and `x86_64`.
 
 ### Native surface rendering
@@ -62,7 +62,7 @@ Media3 ref when a build must use something other than `origin/main`.
 - Android SDK with `ANDROID_HOME` or `ANDROID_SDK_ROOT` set.
 - Android NDK `26.1.10909125`.
 - CMake `3.31.1`.
-- Network access to fetch AndroidX Media refs and libyuv.
+- Network access to fetch AndroidX Media refs and the current libyuv `main` branch, which is built as a static native dependency.
 
 Clone the repository with its Media3 and FFmpeg submodules:
 
@@ -108,8 +108,11 @@ OUTPUT/android-libs/<ABI>/libswresample.a
 OUTPUT/android-libs/<ABI>/libswscale.a
 ```
 
-The generated Media3 source tree is recreated under
-`%TEMP%\jellyfin-androidx-media-pr-stack` on every build.
+The wrapper resets the `media` and `ffmpeg` submodules to their recorded commits,
+updates Media3 refs, applies the selected PRs and local patch, then builds the
+release AAR from the `media` submodule. After a successful build, the wrapper
+again restores both submodules to the recorded commits. Failed builds leave the
+patched/generated submodule state in place for debugging.
 
 ## Build on Linux
 
@@ -126,26 +129,20 @@ To select another Media3 ref:
 ./build.sh <Media3-ref>
 ```
 
-Build the release AAR from the generated Media3 source tree:
-
-```bash
-MEDIA_BUILD_ROOT="${TMPDIR:-/tmp}/jellyfin-androidx-media-pr-stack"
-(
-  cd "$MEDIA_BUILD_ROOT"
-  ./gradlew :lib-decoder-ffmpeg:assembleRelease
-)
-```
-
-The AAR is written to:
+The same `OUTPUT` files are written as on Windows:
 
 ```text
-$MEDIA_BUILD_ROOT/libraries/decoder_ffmpeg/buildout/outputs/aar/lib-decoder-ffmpeg-release.aar
+OUTPUT/media3-ffmpeg-decoder-latest-SNAPSHOT.aar
+OUTPUT/android-libs/<ABI>/libavcodec.a
+OUTPUT/android-libs/<ABI>/libavutil.a
+OUTPUT/android-libs/<ABI>/libswresample.a
+OUTPUT/android-libs/<ABI>/libswscale.a
 ```
 
 The repository's CI-equivalent Maven build is:
 
 ```bash
-ANDROIDX_MEDIA_ROOT="$MEDIA_BUILD_ROOT" \
+ANDROIDX_MEDIA_ROOT="$PWD/media" \
   ./gradlew :media3-ffmpeg-decoder:publishToMavenLocal
 ```
 
