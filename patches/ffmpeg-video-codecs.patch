@@ -491,9 +491,14 @@ index 9cc7f561a0dd006cad38282ede9f3a7ff7e69932..cb61ea5a0d744f4613dd6fae853830e1
  
    /**
 diff --git a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java
-index 6b087d66ba57fbf7f6cc4e030eb2c5f55a52cb80..972590d79d61d999d01afa4277c48e76298ba67a 100644
+index 6b087d66ba57fbf7f6cc4e030eb2c5f55a52cb80..7eb0e0cdaf284fbe23c58d9c529d1171da3c2390 100644
 --- a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java
 +++ b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java
+@@ -50 +50,4 @@ public final class ExperimentalFfmpegVideoRenderer extends DecoderVideoRenderer
++  private static final long DROP_OUTPUT_BUFFER_THRESHOLD_US = 500_000;
++  private static final long DROP_TO_KEYFRAME_THRESHOLD_US = 2_000_000;
++
+   private static final int DEFAULT_NUM_OF_INPUT_BUFFERS = 4;
 @@ -131,7 +131,7 @@ public final class ExperimentalFfmpegVideoRenderer extends DecoderVideoRenderer
      String mimeType = format.sampleMimeType;
      if (!FfmpegLibrary.isAvailable() || !MimeTypes.isVideo(mimeType)) {
@@ -503,7 +508,7 @@ index 6b087d66ba57fbf7f6cc4e030eb2c5f55a52cb80..972590d79d61d999d01afa4277c48e76
        return RendererCapabilities.create(C.FORMAT_UNSUPPORTED_SUBTYPE);
      } else if (format.cryptoType != C.CRYPTO_TYPE_NONE) {
        return RendererCapabilities.create(C.FORMAT_UNSUPPORTED_DRM);
-@@ -164,11 +164,24 @@ public final class ExperimentalFfmpegVideoRenderer extends DecoderVideoRenderer
+@@ -164,11 +164,40 @@ public final class ExperimentalFfmpegVideoRenderer extends DecoderVideoRenderer
    protected void renderOutputBufferToSurface(VideoDecoderOutputBuffer outputBuffer, Surface surface)
        throws FfmpegDecoderException {
      if (decoder == null) {
@@ -528,6 +533,22 @@ index 6b087d66ba57fbf7f6cc4e030eb2c5f55a52cb80..972590d79d61d999d01afa4277c48e76
 +      decoder = null;
 +    }
    }
++
++  @Override
++  protected boolean shouldDropOutputBuffer(long earlyUs, long elapsedRealtimeUs) {
++    return earlyUs < -DROP_OUTPUT_BUFFER_THRESHOLD_US;
++  }
++
++  @Override
++  protected boolean shouldForceRenderOutputBuffer(long earlyUs, long elapsedSinceLastRenderUs) {
++    return earlyUs >= -DROP_OUTPUT_BUFFER_THRESHOLD_US
++        && super.shouldForceRenderOutputBuffer(earlyUs, elapsedSinceLastRenderUs);
++  }
++
++  @Override
++  protected boolean shouldDropBuffersToKeyframe(long earlyUs, long elapsedRealtimeUs) {
++    return earlyUs < -DROP_TO_KEYFRAME_THRESHOLD_US;
++  }
  
    @Override
 diff --git a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java
@@ -694,7 +715,7 @@ index 91d79369ae766d49fd63d2f5affe759b8a3eddd5..cc05734e41f396755e5777f4565bb87e
      --disable-symver
      --enable-swresample
 diff --git a/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc b/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
-index afb92bc29a0834eb35977620619a71945bdca457..a68983adf40fef4006b8961af06636dc00382e95 100644
+index afb92bc29a0834eb35977620619a71945bdca457..e75f263df238cc880b91a4299941b04d1baba5b7 100644
 --- a/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
 +++ b/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
 @@ -14,11 +14,19 @@
@@ -1386,7 +1407,7 @@ index afb92bc29a0834eb35977620619a71945bdca457..a68983adf40fef4006b8961af06636dc
  
      return jniContext;
  }
-@@ -678,218 +1077,324 @@ VIDEO_DECODER_FUNC(jlong, ffmpegReset, jlong jContext) {
+@@ -678,218 +1077,330 @@ VIDEO_DECODER_FUNC(jlong, ffmpegReset, jlong jContext) {
  }
  
  VIDEO_DECODER_FUNC(void, ffmpegRelease, jlong jContext) {
@@ -1541,6 +1562,12 @@ index afb92bc29a0834eb35977620619a71945bdca457..a68983adf40fef4006b8961af06636dc
 -        return VIDEO_DECODER_ERROR_OTHER;
 +        return VIDEO_DECODER_ERROR_INVALID_DATA;
      }
++    const int unrecoverable_decode_errors =
++            raw_frame->decode_error_flags & ~FF_DECODE_ERROR_CONCEALMENT_ACTIVE;
++    if ((raw_frame->flags & AV_FRAME_FLAG_CORRUPT) || unrecoverable_decode_errors != 0) {
++        av_frame_free(&raw_frame);
++        return VIDEO_DECODER_ERROR_INVALID_DATA;
++    }
  
 -    // Convert Success! free the raw frame!
 -    av_frame_free(&raw_frame);
@@ -1852,10 +1879,10 @@ index afb92bc29a0834eb35977620619a71945bdca457..a68983adf40fef4006b8961af06636dc
 -
 diff --git a/libraries/decoder_ffmpeg/src/test/java/androidx/media3/decoder/ffmpeg/FfmpegLibraryTest.java b/libraries/decoder_ffmpeg/src/test/java/androidx/media3/decoder/ffmpeg/FfmpegLibraryTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..3189ce5e1b2f99a3acdb6d047011dbdbfd869932
+index 0000000000000000000000000000000000000000..7a5cc262528f38696d65b947bb21fbde29f17750
 --- /dev/null
 +++ b/libraries/decoder_ffmpeg/src/test/java/androidx/media3/decoder/ffmpeg/FfmpegLibraryTest.java
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,70 @@
 +/*
 + * Copyright (C) 2026 The Android Open Source Project
 + *
@@ -1907,5 +1934,22 @@ index 0000000000000000000000000000000000000000..3189ce5e1b2f99a3acdb6d047011dbdb
 +    assertThat(FfmpegLibrary.getCodecName(h264DolbyVision)).isEqualTo("h264");
 +    assertThat(FfmpegLibrary.getCodecName(av1DolbyVision)).isNull();
 +    assertThat(FfmpegLibrary.getCodecName(MimeTypes.VIDEO_FLV)).isNull();
++  }
++
++  @Test
++  public void lateFramePolicy_delaysDroppingToKeyframe() {
++    ExperimentalFfmpegVideoRenderer renderer =
++        new ExperimentalFfmpegVideoRenderer(
++            /* allowedJoiningTimeMs= */ 0,
++            /* eventHandler= */ null,
++            /* eventListener= */ null,
++            /* maxDroppedFramesToNotify= */ 0);
++
++    assertThat(renderer.shouldDropOutputBuffer(-500_000, 0)).isFalse();
++    assertThat(renderer.shouldDropOutputBuffer(-500_001, 0)).isTrue();
++    assertThat(renderer.shouldForceRenderOutputBuffer(-500_000, 100_001)).isTrue();
++    assertThat(renderer.shouldForceRenderOutputBuffer(-500_001, 100_001)).isFalse();
++    assertThat(renderer.shouldDropBuffersToKeyframe(-2_000_000, 0)).isFalse();
++    assertThat(renderer.shouldDropBuffersToKeyframe(-2_000_001, 0)).isTrue();
 +  }
 +}
