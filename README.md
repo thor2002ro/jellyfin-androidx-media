@@ -34,10 +34,8 @@ treated as an official Jellyfin or AndroidX Media release.
 
 ### Media3 fixes
 
-The build starts from `origin/main` by default and applies the FFmpeg video
-renderer commit series from [AndroidX Media PR 1591](https://github.com/androidx/media/pull/1591),
-the local [`ffmpeg-video-codecs.patch`](patches/ffmpeg-video-codecs.patch), and
-these selected AndroidX Media pull requests:
+The build starts from `origin/main` by default, applies these selected AndroidX
+Media pull requests, then applies the numbered local patches in [`patches/`](patches/):
 
 - [PR 3280](https://github.com/androidx/media/pull/3280): Dolby Vision in HLS/TS.
 - [PR 3271](https://github.com/androidx/media/pull/3271): PCM and silence-skipping
@@ -59,9 +57,9 @@ Media3 ref when a build must use something other than `origin/main`.
 
 - Git with submodule support.
 - Java 17.
-- Android SDK with `ANDROID_HOME` or `ANDROID_SDK_ROOT` set.
-- Android NDK `26.1.10909125`.
-- CMake `3.31.1`.
+- Android SDK with `ANDROID_HOME`, `ANDROID_SDK_ROOT`, or `sdk.dir` in `local.properties`.
+- At least one Android NDK installed in the SDK. The newest installed side-by-side NDK is selected automatically.
+- CMake and Ninja available on `PATH` or installed as an Android SDK CMake package.
 - Network access to fetch AndroidX Media refs and the current libyuv `main` branch, which is built as a static native dependency.
 
 Clone the repository with its Media3 and FFmpeg submodules:
@@ -77,62 +75,66 @@ For an existing checkout:
 git submodule update --init --recursive
 ```
 
+### Native tool selection
+
+The build reads an explicit NDK path from `-PandroidNdkPath`,
+`ANDROID_NDK_PATH`, `ANDROID_NDK_ROOT`, `ANDROID_NDK_HOME`, or `ANDROID_NDK`.
+Otherwise it
+selects the newest installed NDK under `<Android SDK>/ndk`. Pin a specific
+installed package with `-PandroidNdkVersion` or `ANDROID_NDK_VERSION`.
+
+CMake and Ninja can be overridden with `-PcmakePath`/`CMAKE` and
+`-PninjaPath`/`NINJA`. Without overrides, the build checks `PATH` and then the
+installed Android SDK CMake packages, choosing the newest package available.
+
 ## Build on Windows
 
-Windows builds additionally require PowerShell and WSL with `bash`, `make`,
-`git`, and `tar`. The wrapper performs the complete build:
+Install Git for Windows, Java 17, the Android SDK with an NDK, and CMake with
+Ninja, then run:
 
 ```bat
-update-static-libs.bat
+update-repo.bat
 ```
 
-To build another Media3 branch, tag, or ref:
+To select another Media3 ref:
 
 ```bat
-update-static-libs.bat <Media3-ref>
-```
-
-PowerShell parameters can be passed through the wrapper:
-
-```bat
-update-static-libs.bat <Media3-ref> -AndroidApi 23 -OutputDir ".\OUTPUT-custom"
+update-repo.bat <Media3-ref>
 ```
 
 The default output is:
 
 ```text
-OUTPUT/media3-ffmpeg-decoder-latest-SNAPSHOT.aar
+OUTPUT/media3-*-release.aar
+OUTPUT/media3-ffmpeg-decoder-release.aar
 OUTPUT/android-libs/<ABI>/libavcodec.a
 OUTPUT/android-libs/<ABI>/libavutil.a
 OUTPUT/android-libs/<ABI>/libswresample.a
 OUTPUT/android-libs/<ABI>/libswscale.a
 ```
 
-The wrapper resets the `media` and `ffmpeg` submodules to their recorded commits,
-updates Media3 refs, applies the selected PRs and local patch, then builds the
-release AAR from the `media` submodule. After a successful build, the wrapper
-again restores both submodules to the recorded commits. Failed builds leave the
-patched/generated submodule state in place for debugging.
-
 ## Build on Linux
 
-Install NDK `26.1.10909125` and CMake `3.31.1`, then set `ANDROID_HOME`:
+Install an Android NDK plus CMake and Ninja, then set `ANDROID_HOME`:
 
 ```bash
 export ANDROID_HOME="$HOME/Android/Sdk"
 ./build.sh
 ```
 
-To select another Media3 ref:
+To select another Media3 ref or mode:
 
 ```bash
 ./build.sh <Media3-ref>
+./build.sh media3 <Media3-ref>
+./build.sh ffmpeg <Media3-ref>
 ```
 
 The same `OUTPUT` files are written as on Windows:
 
 ```text
-OUTPUT/media3-ffmpeg-decoder-latest-SNAPSHOT.aar
+OUTPUT/media3-*-release.aar
+OUTPUT/media3-ffmpeg-decoder-release.aar
 OUTPUT/android-libs/<ABI>/libavcodec.a
 OUTPUT/android-libs/<ABI>/libavutil.a
 OUTPUT/android-libs/<ABI>/libswresample.a

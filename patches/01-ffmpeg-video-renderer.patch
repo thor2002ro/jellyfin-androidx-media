@@ -1,0 +1,1135 @@
+diff --git a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoDecoder.java b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoDecoder.java
+new file mode 100644
+index 0000000000..887d2403a1
+--- /dev/null
++++ b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoDecoder.java
+@@ -0,0 +1,242 @@
++package androidx.media3.decoder.ffmpeg;
++
++import static androidx.annotation.VisibleForTesting.PACKAGE_PRIVATE;
++
++import android.view.Surface;
++
++import androidx.annotation.Nullable;
++import androidx.annotation.VisibleForTesting;
++import androidx.media3.common.C;
++import androidx.media3.common.Format;
++import androidx.media3.common.util.Assertions;
++import androidx.media3.common.util.UnstableApi;
++import androidx.media3.common.util.Util;
++import androidx.media3.decoder.DecoderInputBuffer;
++import androidx.media3.decoder.SimpleDecoder;
++import androidx.media3.decoder.VideoDecoderOutputBuffer;
++
++import java.nio.ByteBuffer;
++import java.util.List;
++
++/**
++ * Ffmpeg Video decoder.
++ */
++@VisibleForTesting(otherwise = PACKAGE_PRIVATE)
++@UnstableApi
++/* package */ final class ExperimentalFfmpegVideoDecoder
++    extends SimpleDecoder<DecoderInputBuffer, VideoDecoderOutputBuffer, FfmpegDecoderException> {
++
++  private static final String TAG = "FfmpegVideoDecoder";
++
++  // LINT.IfChange
++  private static final int VIDEO_DECODER_SUCCESS = 0;
++  private static final int VIDEO_DECODER_ERROR_INVALID_DATA = -1;
++  private static final int VIDEO_DECODER_ERROR_OTHER = -2;
++  private static final int VIDEO_DECODER_ERROR_READ_FRAME = -3;
++  // LINT.ThenChange(../../../../../../../jni/ffmpeg_jni.cc)
++
++  private final String codecName;
++  private long nativeContext;
++  @Nullable
++  private final byte[] extraData;
++  @C.VideoOutputMode
++  private volatile int outputMode;
++
++  private int degree = 0;
++
++  /**
++   * Creates a Ffmpeg video Decoder.
++   *
++   * @param numInputBuffers        Number of input buffers.
++   * @param numOutputBuffers       Number of output buffers.
++   * @param initialInputBufferSize The initial size of each input buffer, in bytes.
++   * @param threads                Number of threads libffmpeg will use to decode.
++   * @throws FfmpegDecoderException Thrown if an exception occurs when initializing the decoder.
++   */
++  public ExperimentalFfmpegVideoDecoder(
++      int numInputBuffers, int numOutputBuffers, int initialInputBufferSize, int threads,
++      Format format)
++      throws FfmpegDecoderException {
++    super(
++        new DecoderInputBuffer[numInputBuffers],
++        new VideoDecoderOutputBuffer[numOutputBuffers]);
++    if (!FfmpegLibrary.isAvailable()) {
++      throw new FfmpegDecoderException("Failed to load decoder native library.");
++    }
++    codecName = Assertions.checkNotNull(FfmpegLibrary.getCodecName(format.sampleMimeType));
++    extraData = getExtraData(format.sampleMimeType, format.initializationData);
++    degree = format.rotationDegrees;
++    nativeContext = ffmpegInitialize(codecName, extraData, threads, degree);
++    if (nativeContext == 0) {
++      throw new FfmpegDecoderException("Failed to initialize decoder.");
++    }
++    setInitialInputBufferSize(initialInputBufferSize);
++  }
++
++  /**
++   * Returns FFmpeg-compatible codec-specific initialization data ("extra data"), or {@code null} if
++   * not required.
++   */
++  @Nullable
++  private static byte[] getExtraData(String mimeType, List<byte[]> initializationData) {
++    int size = 0;
++    for (int i = 0; i < initializationData.size(); i++) {
++      size += initializationData.get(i).length;
++    }
++    if (size > 0) {
++      byte[] extra = new byte[size];
++      ByteBuffer wrapper = ByteBuffer.wrap(extra);
++      for (int i = 0; i < initializationData.size(); i++) {
++        wrapper.put(initializationData.get(i));
++      }
++      return extra;
++    }
++    return null;
++  }
++
++  @Override
++  public String getName() {
++    return "ffmpeg" + FfmpegLibrary.getVersion() + "-" + codecName;
++  }
++
++  /**
++   * Sets the output mode for frames rendered by the decoder.
++   *
++   * @param outputMode The output mode.
++   */
++  public void setOutputMode(@C.VideoOutputMode int outputMode) {
++    this.outputMode = outputMode;
++  }
++
++  @Override
++  protected DecoderInputBuffer createInputBuffer() {
++    return new DecoderInputBuffer(DecoderInputBuffer.BUFFER_REPLACEMENT_MODE_DIRECT);
++  }
++
++  @Override
++  protected VideoDecoderOutputBuffer createOutputBuffer() {
++    return new VideoDecoderOutputBuffer(this::releaseOutputBuffer);
++  }
++
++  @Override
++  @Nullable
++  protected FfmpegDecoderException decode(
++      DecoderInputBuffer inputBuffer, VideoDecoderOutputBuffer outputBuffer, boolean reset) {
++    if (reset) {
++
++      nativeContext = ffmpegReset(nativeContext);
++      if (nativeContext == 0) {
++        return new FfmpegDecoderException("Error resetting (see logcat).");
++      }
++    }
++
++    // send packet
++    ByteBuffer inputData = Util.castNonNull(inputBuffer.data);
++    int inputSize = inputData.limit();
++    // enqueue origin data
++    int sendPacketResult = ffmpegSendPacket(nativeContext, inputData, inputSize,
++        inputBuffer.timeUs);
++
++    if (sendPacketResult == VIDEO_DECODER_ERROR_INVALID_DATA) {
++      outputBuffer.shouldBeSkipped = true;
++      return null;
++    } else if (sendPacketResult == VIDEO_DECODER_ERROR_READ_FRAME) {
++      // need read frame
++    } else if (sendPacketResult == VIDEO_DECODER_ERROR_OTHER) {
++      return new FfmpegDecoderException("ffmpegDecode error: (see logcat)");
++    }
++
++    // receive frame
++    boolean decodeOnly = !isAtLeastOutputStartTimeUs(inputBuffer.timeUs);
++    // We need to dequeue the decoded frame from the decoder even when the input data is
++    // decode-only.
++    if (!decodeOnly) {
++      outputBuffer.init(inputBuffer.timeUs, outputMode, null);
++    }
++    int getFrameResult = ffmpegReceiveFrame(nativeContext, outputMode, outputBuffer, decodeOnly);
++    if (getFrameResult == VIDEO_DECODER_ERROR_OTHER) {
++      return new FfmpegDecoderException("ffmpegDecode error: (see logcat)");
++    }
++
++    if (getFrameResult == VIDEO_DECODER_ERROR_INVALID_DATA) {
++      outputBuffer.shouldBeSkipped = true;
++    }
++
++    if (!decodeOnly) {
++      outputBuffer.format = inputBuffer.format;
++    }
++
++    return null;
++  }
++
++  @Override
++  protected FfmpegDecoderException createUnexpectedDecodeException(Throwable error) {
++    return new FfmpegDecoderException("Unexpected decode error", error);
++  }
++
++  @Override
++  public void release() {
++    super.release();
++    ffmpegRelease(nativeContext);
++    nativeContext = 0;
++  }
++
++  /**
++   * Renders output buffer to the given surface. Must only be called when in {@link
++   * C#VIDEO_OUTPUT_MODE_SURFACE_YUV} mode.
++   *
++   * @param outputBuffer Output buffer.
++   * @param surface      Output surface.
++   * @throws FfmpegDecoderException Thrown if called with invalid output mode or frame rendering
++   *                                fails.
++   */
++  public void renderToSurface(VideoDecoderOutputBuffer outputBuffer, Surface surface)
++      throws FfmpegDecoderException {
++    if (outputBuffer.mode != C.VIDEO_OUTPUT_MODE_SURFACE_YUV) {
++      throw new FfmpegDecoderException("Invalid output mode.");
++    }
++    int rst = ffmpegRenderFrame(nativeContext, surface, outputBuffer, outputBuffer.width,
++        outputBuffer.height);
++    if (rst == VIDEO_DECODER_ERROR_OTHER) {
++      throw new FfmpegDecoderException(
++          "Buffer render error: ");
++    }
++  }
++
++  private native long ffmpegInitialize(String codecName, @Nullable byte[] extraData, int threads,
++      int degree);
++
++  private native long ffmpegReset(long context);
++
++  private native void ffmpegRelease(long context);
++
++  private native int ffmpegRenderFrame(
++      long context, Surface surface, VideoDecoderOutputBuffer outputBuffer,
++      int displayedWidth,
++      int displayedHeight);
++
++  /**
++   * Decodes the encoded data passed.
++   *
++   * @param context     Decoder context.
++   * @param encodedData Encoded data.
++   * @param length      Length of the data buffer.
++   * @return {@link #VIDEO_DECODER_SUCCESS} if successful, {@link #VIDEO_DECODER_ERROR_OTHER} if an
++   * error occurred.
++   */
++  private native int ffmpegSendPacket(long context, ByteBuffer encodedData, int length,
++      long inputTime);
++
++  /**
++   * Gets the decoded frame.
++   *
++   * @param context      Decoder context.
++   * @param outputBuffer Output buffer for the decoded frame.
++   * @return {@link #VIDEO_DECODER_SUCCESS} if successful, {@link #VIDEO_DECODER_ERROR_INVALID_DATA}
++   * if successful but the frame is decode-only, {@link #VIDEO_DECODER_ERROR_OTHER} if an error
++   * occurred.
++   */
++  private native int ffmpegReceiveFrame(
++      long context, int outputMode, VideoDecoderOutputBuffer outputBuffer, boolean decodeOnly);
++
++}
+diff --git a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java
+index 2f02c2b783..6b087d66ba 100644
+--- a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java
++++ b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java
+@@ -15,17 +15,18 @@
+  */
+ package androidx.media3.decoder.ffmpeg;
+ 
+-import static androidx.media3.exoplayer.DecoderReuseEvaluation.DISCARD_REASON_MIME_TYPE_CHANGED;
+-import static androidx.media3.exoplayer.DecoderReuseEvaluation.REUSE_RESULT_NO;
+-import static androidx.media3.exoplayer.DecoderReuseEvaluation.REUSE_RESULT_YES_WITHOUT_RECONFIGURATION;
++import static java.lang.Runtime.getRuntime;
+ 
+ import android.os.Handler;
+ import android.view.Surface;
++
+ import androidx.annotation.Nullable;
+ import androidx.media3.common.C;
+ import androidx.media3.common.Format;
+-import androidx.media3.common.util.ExperimentalApi;
++import androidx.media3.common.MimeTypes;
+ import androidx.media3.common.util.TraceUtil;
++import androidx.media3.common.util.UnstableApi;
++import androidx.media3.common.util.Util;
+ import androidx.media3.decoder.CryptoConfig;
+ import androidx.media3.decoder.Decoder;
+ import androidx.media3.decoder.DecoderInputBuffer;
+@@ -34,19 +35,41 @@ import androidx.media3.exoplayer.DecoderReuseEvaluation;
+ import androidx.media3.exoplayer.RendererCapabilities;
+ import androidx.media3.exoplayer.video.DecoderVideoRenderer;
+ import androidx.media3.exoplayer.video.VideoRendererEventListener;
+-import java.util.Objects;
+ 
+-// TODO: Merge actual implementation in https://github.com/androidx/media/pull/1591.
+ /**
+  * <b>NOTE: This class if under development and is not yet functional.</b>
+  *
+  * <p>Decodes and renders video using FFmpeg.
++ * <p>Merge actual implementation in https://github.com/google/ExoPlayer/pull/7132.
+  */
+-@ExperimentalApi // TODO: b/470357054 - Merge pull request and publish FfmpegVideoRenderer.
++@UnstableApi
+ public final class ExperimentalFfmpegVideoRenderer extends DecoderVideoRenderer {
+ 
+   private static final String TAG = "ExperimentalFfmpegVideoRenderer";
+ 
++  private static final int DEFAULT_NUM_OF_INPUT_BUFFERS = 4;
++  private static final int DEFAULT_NUM_OF_OUTPUT_BUFFERS = 4;
++
++  /* Default size based on 720p resolution video compressed by a factor of two. */
++  private static final int DEFAULT_INPUT_BUFFER_SIZE =
++      Util.ceilDivide(1280, 64) * Util.ceilDivide(720, 64) * (64 * 64 * 3 / 2) / 2;
++
++
++  /**
++   * The number of input buffers.
++   */
++  private final int numInputBuffers;
++  /**
++   * The number of output buffers. The renderer may limit the minimum possible value due to
++   * requiring multiple output buffers to be dequeued at a time for it to make progress.
++   */
++  private final int numOutputBuffers;
++
++  private final int threads;
++
++  @Nullable
++  private ExperimentalFfmpegVideoDecoder decoder;
++
+   /**
+    * Creates a new instance.
+    *
+@@ -63,8 +86,39 @@ public final class ExperimentalFfmpegVideoRenderer extends DecoderVideoRenderer
+       @Nullable Handler eventHandler,
+       @Nullable VideoRendererEventListener eventListener,
+       int maxDroppedFramesToNotify) {
++    this(
++        allowedJoiningTimeMs,
++        eventHandler,
++        eventListener,
++        maxDroppedFramesToNotify,
++        /* threads= */ getRuntime().availableProcessors(),
++        DEFAULT_NUM_OF_INPUT_BUFFERS,
++        DEFAULT_NUM_OF_OUTPUT_BUFFERS);
++  }
++
++  /**
++   * Creates a new instance.
++   *
++   * @param allowedJoiningTimeMs     The maximum duration in milliseconds for which this video renderer
++   *                                 can attempt to seamlessly join an ongoing playback.
++   * @param eventHandler             A handler to use when delivering events to {@code eventListener}. May be
++   *                                 null if delivery of events is not required.
++   * @param eventListener            A listener of events. May be null if delivery of events is not required.
++   * @param maxDroppedFramesToNotify The maximum number of frames that can be dropped between
++   *                                 invocations of {@link VideoRendererEventListener#onDroppedFrames(int, long)}.
++   */
++  public ExperimentalFfmpegVideoRenderer(
++      long allowedJoiningTimeMs,
++      @Nullable Handler eventHandler,
++      @Nullable VideoRendererEventListener eventListener,
++      int maxDroppedFramesToNotify,
++      int threads,
++      int numInputBuffers,
++      int numOutputBuffers) {
+     super(allowedJoiningTimeMs, eventHandler, eventListener, maxDroppedFramesToNotify);
+-    // TODO: Implement.
++    this.threads = threads;
++    this.numInputBuffers = numInputBuffers;
++    this.numOutputBuffers = numOutputBuffers;
+   }
+ 
+   @Override
+@@ -74,63 +128,60 @@ public final class ExperimentalFfmpegVideoRenderer extends DecoderVideoRenderer
+ 
+   @Override
+   public final @RendererCapabilities.Capabilities int supportsFormat(Format format) {
+-    // TODO: Remove this line and uncomment the implementation below.
+-    return RendererCapabilities.create(C.FORMAT_UNSUPPORTED_TYPE);
+-    /*
+-    String mimeType = Assertions.checkNotNull(format.sampleMimeType);
++    String mimeType = format.sampleMimeType;
+     if (!FfmpegLibrary.isAvailable() || !MimeTypes.isVideo(mimeType)) {
+-      return FORMAT_UNSUPPORTED_TYPE;
+-    } else if (!FfmpegLibrary.supportsFormat(format.sampleMimeType)) {
+-      return RendererCapabilities.create(FORMAT_UNSUPPORTED_SUBTYPE);
+-    } else if (format.exoMediaCryptoType != null) {
+-      return RendererCapabilities.create(FORMAT_UNSUPPORTED_DRM);
++      return RendererCapabilities.create(C.FORMAT_UNSUPPORTED_TYPE);
++    } else if (!FfmpegLibrary.supportsFormat(mimeType)) {
++      return RendererCapabilities.create(C.FORMAT_UNSUPPORTED_SUBTYPE);
++    } else if (format.cryptoType != C.CRYPTO_TYPE_NONE) {
++      return RendererCapabilities.create(C.FORMAT_UNSUPPORTED_DRM);
+     } else {
+       return RendererCapabilities.create(
+-          FORMAT_HANDLED,
++          C.FORMAT_HANDLED,
+           ADAPTIVE_SEAMLESS,
+           TUNNELING_NOT_SUPPORTED);
+     }
+-    */
+   }
+ 
+-  @SuppressWarnings("nullness:return")
+   @Override
+   protected Decoder<DecoderInputBuffer, VideoDecoderOutputBuffer, FfmpegDecoderException>
+       createDecoder(Format format, @Nullable CryptoConfig cryptoConfig)
+           throws FfmpegDecoderException {
+     TraceUtil.beginSection("createFfmpegVideoDecoder");
+-    // TODO: Implement, remove the SuppressWarnings annotation, and update the return type to use
+-    // the concrete type of the decoder (probably FfmepgVideoDecoder).
++    int initialInputBufferSize =
++        format.maxInputSize != Format.NO_VALUE ? format.maxInputSize : DEFAULT_INPUT_BUFFER_SIZE;
++    int threads = Math.max(this.threads, 4);
++    ExperimentalFfmpegVideoDecoder decoder =
++        new ExperimentalFfmpegVideoDecoder(numInputBuffers, numOutputBuffers,
++            initialInputBufferSize, threads,
++            format);
++    this.decoder = decoder;
+     TraceUtil.endSection();
+-    return null;
++    return decoder;
+   }
+ 
+   @Override
+   protected void renderOutputBufferToSurface(VideoDecoderOutputBuffer outputBuffer, Surface surface)
+       throws FfmpegDecoderException {
+-    // TODO: Implement.
++    if (decoder == null) {
++      throw new FfmpegDecoderException(
++          "Failed to render output buffer to surface: decoder is not initialized.");
++    }
++    decoder.renderToSurface(outputBuffer, surface);
++    outputBuffer.release();
+   }
+ 
+   @Override
+   protected void setDecoderOutputMode(@C.VideoOutputMode int outputMode) {
+-    // TODO: Uncomment the implementation below.
+-    /*
+     if (decoder != null) {
+       decoder.setOutputMode(outputMode);
+     }
+-    */
+   }
+ 
+   @Override
+   protected DecoderReuseEvaluation canReuseDecoder(
+       String decoderName, Format oldFormat, Format newFormat) {
+-    boolean sameMimeType = Objects.equals(oldFormat.sampleMimeType, newFormat.sampleMimeType);
+     // TODO: Ability to reuse the decoder may be MIME type dependent.
+-    return new DecoderReuseEvaluation(
+-        decoderName,
+-        oldFormat,
+-        newFormat,
+-        sameMimeType ? REUSE_RESULT_YES_WITHOUT_RECONFIGURATION : REUSE_RESULT_NO,
+-        sameMimeType ? 0 : DISCARD_REASON_MIME_TYPE_CHANGED);
++    return super.canReuseDecoder(decoderName, oldFormat, newFormat);
+   }
+ }
+diff --git a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java
+index 9ef7b6c8ef..7dbc569dd1 100644
+--- a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java
++++ b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java
+@@ -22,6 +22,7 @@ import androidx.media3.common.MimeTypes;
+ import androidx.media3.common.util.LibraryLoader;
+ import androidx.media3.common.util.Log;
+ import androidx.media3.common.util.UnstableApi;
++
+ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
+ 
+ /** Configures and queries the underlying native library. */
+@@ -95,10 +96,13 @@ public final class FfmpegLibrary {
+    *
+    * @param mimeType The MIME type to check.
+    */
+-  public static boolean supportsFormat(String mimeType) {
++  public static boolean supportsFormat(@Nullable String mimeType) {
+     if (!isAvailable()) {
+       return false;
+     }
++    if (mimeType == null) {
++      return false;
++    }
+     @Nullable String codecName = getCodecName(mimeType);
+     if (codecName == null) {
+       return false;
+@@ -153,7 +157,18 @@ public final class FfmpegLibrary {
+       case MimeTypes.VIDEO_H264:
+         return "h264";
+       case MimeTypes.VIDEO_H265:
++      case MimeTypes.VIDEO_DOLBY_VISION:
+         return "hevc";
++      case MimeTypes.VIDEO_VP8:
++        return "vp8";
++      case MimeTypes.VIDEO_VP9:
++        return "vp9";
++      case MimeTypes.VIDEO_WEBM:
++        return "webm";
++      case MimeTypes.VIDEO_MPEG:
++        return "mpegvideo";
++      case MimeTypes.VIDEO_MPEG2:
++        return "mpeg2video";
+       default:
+         return null;
+     }
+@@ -164,4 +179,4 @@ public final class FfmpegLibrary {
+   private static native int ffmpegGetInputBufferPaddingSize();
+ 
+   private static native boolean ffmpegHasDecoder(String codecName);
+-}
++}
+\ No newline at end of file
+diff --git a/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt b/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
+index e07963d740..7631000fa5 100644
+--- a/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
++++ b/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
+@@ -26,7 +26,7 @@ project(libffmpegJNI C CXX)
+ set(ffmpeg_location "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg")
+ set(ffmpeg_binaries "${ffmpeg_location}/android-libs/${ANDROID_ABI}")
+ 
+-foreach(ffmpeg_lib avutil swresample avcodec)
++foreach(ffmpeg_lib avutil swresample avcodec swscale)
+     set(ffmpeg_lib_filename lib${ffmpeg_lib}.a)
+     set(ffmpeg_lib_file_path ${ffmpeg_binaries}/${ffmpeg_lib_filename})
+     add_library(
+@@ -39,7 +39,19 @@ foreach(ffmpeg_lib avutil swresample avcodec)
+             ${ffmpeg_lib_file_path})
+ endforeach()
+ 
++set(yuv_location "${CMAKE_CURRENT_SOURCE_DIR}/libyuv")
++set(yuv_binaries "${yuv_location}/android-libs/${ANDROID_ABI}")
++add_library(
++        yuv
++        STATIC
++        IMPORTED)
++set_target_properties(
++        yuv PROPERTIES
++        IMPORTED_LOCATION
++        ${yuv_binaries}/libyuv.a)
++
+ include_directories(${ffmpeg_location})
++include_directories("${yuv_location}/include")
+ find_library(android_log_lib log)
+ 
+ add_library(ffmpegJNI
+@@ -55,6 +67,8 @@ target_link_libraries(ffmpegJNI
+                       PRIVATE swresample
+                       PRIVATE avcodec
+                       PRIVATE avutil
++                      PRIVATE swscale
++                      PRIVATE yuv
+                       PRIVATE ${android_log_lib})
+ 
+ # Additional flags needed for "arm64-v8a" from NDK 23.1.7779620 and above.
+diff --git a/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh b/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
+index e0a9aa4f84..cc05734e41 100755
+--- a/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
++++ b/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
+@@ -37,8 +37,7 @@ COMMON_OPTIONS="
+     --disable-everything
+     --disable-avdevice
+     --disable-avformat
+-    --disable-swscale
+-    --disable-postproc
++    --enable-swscale
+     --disable-avfilter
+     --disable-symver
+     --enable-swresample
+@@ -88,7 +87,8 @@ COMMON_OPTIONS="
+     ${COMMON_OPTIONS}
+ make -j$JOBS
+ make install-libs
+ make clean
++mkdir -p "${TMPDIR:-/tmp}"
+ ./configure \
+     --libdir=android-libs/arm64-v8a \
+     --arch=aarch64 \
+@@ -101,7 +101,8 @@ COMMON_OPTIONS="
+     ${COMMON_OPTIONS}
+ make -j$JOBS
+ make install-libs
+ make clean
++mkdir -p "${TMPDIR:-/tmp}"
+ ./configure \
+     --libdir=android-libs/x86 \
+     --arch=x86 \
+@@ -115,7 +116,8 @@ COMMON_OPTIONS="
+     ${COMMON_OPTIONS}
+ make -j$JOBS
+ make install-libs
+ make clean
++mkdir -p "${TMPDIR:-/tmp}"
+ ./configure \
+     --libdir=android-libs/x86_64 \
+     --arch=x86_64 \
+diff --git a/libraries/decoder_ffmpeg/src/main/jni/build_yuv.sh b/libraries/decoder_ffmpeg/src/main/jni/build_yuv.sh
+new file mode 100644
+index 0000000000..7c85e48ad6
+--- /dev/null
++++ b/libraries/decoder_ffmpeg/src/main/jni/build_yuv.sh
+@@ -0,0 +1,27 @@
++#!/bin/bash
++set -euo pipefail
++
++FFMPEG_MODULE_PATH="$1"
++NDK_PATH="$2"
++ANDROID_API="$3"
++ABIS=(armeabi-v7a arm64-v8a x86 x86_64)
++JOBS="$(nproc 2>/dev/null || echo 4)"
++
++cd "${FFMPEG_MODULE_PATH}/jni/libyuv"
++
++for abi in "${ABIS[@]}"; do
++  build_dir="build-${abi}"
++  rm -rf "${build_dir}"
++  cmake -S . -B "${build_dir}" \
++    -G "Unix Makefiles" \
++    -DCMAKE_TOOLCHAIN_FILE="${NDK_PATH}/build/cmake/android.toolchain.cmake" \
++    -DANDROID_ABI="${abi}" \
++    -DANDROID_PLATFORM="${ANDROID_API}" \
++    -DCMAKE_BUILD_TYPE=Release \
++    -DBUILD_SHARED_LIBS=OFF \
++    -DBUILD_STATIC_LIBS=ON
++
++  cmake --build "${build_dir}" --target yuv --parallel "${JOBS}"
++  mkdir -p "./android-libs/${abi}"
++  cp "${build_dir}/libyuv.a" "./android-libs/${abi}/libyuv.a"
++done
+diff --git a/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc b/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
+index 4dd42aaa30..768386083a 100644
+--- a/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
++++ b/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
+@@ -16,6 +16,11 @@
+ #include <android/log.h>
+ #include <jni.h>
+ #include <stdlib.h>
++#include <thread>
++#include <android/native_window.h>
++#include <android/native_window_jni.h>
++#include <libyuv.h>
++#include <libyuv/scale.h>
+ 
+ extern "C" {
+ #ifdef __cplusplus
+@@ -30,14 +35,48 @@ extern "C" {
+ #include <libavutil/error.h>
+ #include <libavutil/opt.h>
+ #include <libswresample/swresample.h>
++#include <libswscale/swscale.h>
+ }
+ 
+ #define LOG_TAG "ffmpeg_jni"
+ #define LOGE(...) \
+   ((void)__android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__))
++#define LOGW(...) \
++  ((void)__android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__))
+ #define LOGD(...) \
+   ((void)__android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__))
+ 
++#define LIBRARY_FUNC(RETURN_TYPE, NAME, ...)                               \
++  extern "C" {                                                             \
++  JNIEXPORT RETURN_TYPE                                                    \
++  Java_androidx_media3_decoder_ffmpeg_FfmpegLibrary_##NAME(JNIEnv* env,    \
++                                                           jobject thiz,   \
++                                                           ##__VA_ARGS__); \
++  }                                                                        \
++  JNIEXPORT RETURN_TYPE                                                    \
++  Java_androidx_media3_decoder_ffmpeg_FfmpegLibrary_##NAME(                \
++      JNIEnv* env, jobject thiz, ##__VA_ARGS__)
++
++#define AUDIO_DECODER_FUNC(RETURN_TYPE, NAME, ...)               \
++  extern "C" {                                                   \
++  JNIEXPORT RETURN_TYPE                                          \
++  Java_androidx_media3_decoder_ffmpeg_FfmpegAudioDecoder_##NAME( \
++      JNIEnv* env, jobject thiz, ##__VA_ARGS__);                 \
++  }                                                              \
++  JNIEXPORT RETURN_TYPE                                          \
++  Java_androidx_media3_decoder_ffmpeg_FfmpegAudioDecoder_##NAME( \
++      JNIEnv* env, jobject thiz, ##__VA_ARGS__)
++
++#define VIDEO_DECODER_FUNC(RETURN_TYPE, NAME, ...)                             \
++  extern "C" {                                                                 \
++  JNIEXPORT RETURN_TYPE                                                        \
++      Java_androidx_media3_decoder_ffmpeg_ExperimentalFfmpegVideoDecoder_##NAME( \
++          JNIEnv *env, jobject thiz, ##__VA_ARGS__);                           \
++  }                                                                            \
++  JNIEXPORT RETURN_TYPE                                                        \
++      Java_androidx_media3_decoder_ffmpeg_ExperimentalFfmpegVideoDecoder_##NAME( \
++          JNIEnv *env, jobject thiz, ##__VA_ARGS__)
++
+ #define ERROR_STRING_BUFFER_LENGTH 256
+ 
+ // Output format corresponding to AudioFormat.ENCODING_PCM_16BIT.
+@@ -50,6 +89,12 @@ static const int AUDIO_DECODER_ERROR_INVALID_DATA = -1;
+ static const int AUDIO_DECODER_ERROR_OTHER = -2;
+ // LINT.ThenChange(../java/androidx/media3/decoder/ffmpeg/FfmpegAudioDecoder.java)
+ 
++static const int VIDEO_DECODER_ERROR_SURFACE = -4;
++static const int VIDEO_DECODER_SUCCESS = 0;
++static const int VIDEO_DECODER_ERROR_INVALID_DATA = -1;
++static const int VIDEO_DECODER_ERROR_OTHER = -2;
++static const int VIDEO_DECODER_ERROR_READ_FRAME = -3;
++
+ static jmethodID growOutputBufferMethod;
+ 
+ /**
+@@ -452,3 +497,439 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved) {
+ 
+   return JNI_VERSION_1_6;
+ }
++// video
++
++// Android YUV format. See:
++// https://developer.android.com/reference/android/graphics/ImageFormat.html#YV12.
++const int kImageFormatYV12 = 0x32315659;
++
++struct JniContext {
++    ~JniContext() {
++        if (native_window) {
++            ANativeWindow_release(native_window);
++        }
++    }
++
++    bool MaybeAcquireNativeWindow(JNIEnv *env, jobject new_surface) {
++        if (surface == new_surface) {
++            return true;
++        }
++        if (native_window) {
++            ANativeWindow_release(native_window);
++        }
++        native_window_width = 0;
++        native_window_height = 0;
++        native_window = ANativeWindow_fromSurface(env, new_surface);
++        if (native_window == nullptr) {
++            LOGE("kJniStatusANativeWindowError");
++            surface = nullptr;
++            return false;
++        }
++        surface = new_surface;
++        return true;
++    }
++
++    jfieldID data_field;
++    jfieldID yuvPlanes_field;
++    jfieldID yuvStrides_field;
++    jfieldID width_field;
++    jfieldID height_field;
++    jfieldID pts_field;
++    jmethodID init_for_private_frame_method;
++    jmethodID init_for_yuv_frame_method;
++    jmethodID init_method;
++
++    AVCodecContext *codecContext;
++    SwsContext *swsContext;
++
++    ANativeWindow *native_window = nullptr;
++    jobject surface = nullptr;
++    // rorate degree from InputFormat
++    int rotate_degree = 0;
++    int native_window_width = 0;
++    int native_window_height = 0;
++};
++
++constexpr int AlignTo16(int value) { return (value + 15) & (~15); }
++
++/**
++ * Convert AvFrame ColorSpace to exoplayer supported ColorSpace
++ */
++constexpr int cvt_colorspace(AVColorSpace colorSpace) {
++    int colorspace = 0;
++    switch (colorSpace) {
++        case AVCOL_SPC_BT470BG:
++        case AVCOL_SPC_SMPTE170M:
++        case AVCOL_SPC_SMPTE240M:
++            colorspace = 1;
++        case AVCOL_SPC_BT709:
++            colorspace = 2;
++        case AVCOL_SPC_BT2020_NCL:
++        case AVCOL_SPC_BT2020_CL:
++            colorspace = 3;
++    }
++    return colorspace;
++}
++
++/**
++ * Convert other format like(yuv420p10bit) to yuv420p
++ * and scale
++ * @return AVFrame
++ */
++AVFrame *cvt_format(JniContext *jniContext,
++                   AVFrame *src,
++                   AVPixelFormat dst_format,
++                   int dst_width,
++                   int dst_height) {
++    auto src_format = AVPixelFormat(src->format);
++    auto swsContext = sws_getCachedContext(jniContext->swsContext,
++                                           src->width, src->height, src_format,
++                                           dst_width, dst_height, dst_format,
++                                           SWS_FAST_BILINEAR, NULL, NULL, NULL
++    );
++    if (!swsContext) {
++        LOGE("Failed to allocate swsContext.");
++        return nullptr;
++    }
++
++    jniContext->swsContext = swsContext;
++    auto dst = av_frame_alloc();
++    av_frame_copy_props(dst, src); // copy meta data
++    dst->width = dst_width;
++    dst->height = dst_height;
++    dst->format = dst_format;
++    auto alloc_result = av_frame_get_buffer(dst, 0);    // allocate buffer
++    if (alloc_result != 0) {
++        logError("av_frame_get_buffer", alloc_result);
++        av_frame_free(&dst);
++        return nullptr;
++    }
++    auto scale_result = sws_scale(swsContext,
++                                  src->data, src->linesize, 0, src->height,
++                                  dst->data, dst->linesize);
++    if (!scale_result) {
++        logError("sws_scale", scale_result);
++        av_frame_free(&dst);
++        return nullptr;
++    }
++    return dst;
++}
++
++/**
++ * Convert degree to libyuv::RotationMode
++ * @return libyuv::RotationMode
++ */
++libyuv::RotationMode cvt_rotate(int degree) {
++    libyuv::RotationMode rotate = libyuv::kRotate0;
++    if (degree == 90) {
++        rotate = libyuv::kRotate90;
++    } else if (degree == 180) {
++        rotate = libyuv::kRotate180;
++    } else if (degree == 270) {
++        rotate = libyuv::kRotate270;
++    }
++    return rotate;
++}
++
++JniContext *createVideoContext(JNIEnv *env,
++                               const AVCodec *codec,
++                               jbyteArray extraData,
++                               jint threads,
++                               jint degree) {
++    JniContext *jniContext = new(std::nothrow)JniContext();
++
++    AVCodecContext *codecContext = avcodec_alloc_context3(codec);
++    if (!codecContext) {
++        LOGE("Failed to allocate context.");
++        return NULL;
++    }
++
++    // rotate
++    jniContext->rotate_degree = degree;
++
++    if (extraData) {
++        jsize size = env->GetArrayLength(extraData);
++        codecContext->extradata_size = size;
++        codecContext->extradata = (uint8_t *) av_malloc(size + AV_INPUT_BUFFER_PADDING_SIZE);
++        if (!codecContext->extradata) {
++            LOGE("Failed to allocate extradata.");
++            releaseContext(codecContext);
++            return NULL;
++        }
++        env->GetByteArrayRegion(extraData, 0, size, (jbyte *) codecContext->extradata);
++    }
++
++    // opt decode speed.
++    codecContext->skip_loop_filter = AVDISCARD_ALL;
++    codecContext->skip_frame = AVDISCARD_DEFAULT;
++    codecContext->thread_count = threads;
++    codecContext->thread_type = FF_THREAD_FRAME;
++    codecContext->err_recognition = AV_EF_IGNORE_ERR;
++    int result = avcodec_open2(codecContext, codec, NULL);
++    if (result < 0) {
++        logError("avcodec_open2", result);
++        releaseContext(codecContext);
++        return NULL;
++    }
++
++    jniContext->codecContext = codecContext;
++
++    // Populate JNI References.
++    const jclass outputBufferClass = env->FindClass("androidx/media3/decoder/VideoDecoderOutputBuffer");
++    jniContext->data_field = env->GetFieldID(outputBufferClass, "data", "Ljava/nio/ByteBuffer;");
++    jniContext->width_field = env->GetFieldID(outputBufferClass, "width", "I");
++    jniContext->height_field = env->GetFieldID(outputBufferClass, "height", "I");
++    jniContext->pts_field = env->GetFieldID(outputBufferClass, "timeUs", "J");
++
++
++    jniContext->yuvPlanes_field =
++            env->GetFieldID(outputBufferClass, "yuvPlanes", "[Ljava/nio/ByteBuffer;");
++    jniContext->yuvStrides_field = env->GetFieldID(outputBufferClass, "yuvStrides", "[I");
++    jniContext->init_for_private_frame_method =
++            env->GetMethodID(outputBufferClass, "initForPrivateFrame", "(II)V");
++    jniContext->init_for_yuv_frame_method =
++            env->GetMethodID(outputBufferClass, "initForYuvFrame", "(IIIII)Z");
++    jniContext->init_method =
++            env->GetMethodID(outputBufferClass, "init", "(JILjava/nio/ByteBuffer;)V");
++
++    return jniContext;
++}
++
++
++VIDEO_DECODER_FUNC(jlong, ffmpegInitialize, jstring codecName, jbyteArray extraData, jint threads, jint degree) {
++    auto *codec = getCodecByName(env, codecName);
++    if (!codec) {
++        LOGE("Codec not found.");
++        return 0L;
++    }
++
++    return (jlong) createVideoContext(env, codec, extraData, threads, degree);
++}
++
++
++VIDEO_DECODER_FUNC(jlong, ffmpegReset, jlong jContext) {
++    JniContext *const jniContext = reinterpret_cast<JniContext *>(jContext);
++    AVCodecContext *context = jniContext->codecContext;
++    if (!context) {
++        LOGE("Tried to reset without a context.");
++        return 0L;
++    }
++
++    avcodec_flush_buffers(context);
++    return (jlong) jniContext;
++}
++
++VIDEO_DECODER_FUNC(void, ffmpegRelease, jlong jContext) {
++    JniContext *const jniContext = reinterpret_cast<JniContext *>(jContext);
++    AVCodecContext *context = jniContext->codecContext;
++    SwsContext *swsContext = jniContext->swsContext;
++
++    if (context) {
++        avcodec_free_context(&context);
++        jniContext->codecContext = NULL;
++    }
++
++    if (swsContext) {
++        sws_freeContext(swsContext);
++        jniContext->swsContext = NULL;
++    }
++}
++
++
++VIDEO_DECODER_FUNC(jint, ffmpegSendPacket, jlong jContext, jobject encodedData,
++                   jint length, jlong inputTimeUs) {
++    JniContext *const jniContext = reinterpret_cast<JniContext *>(jContext);
++    AVCodecContext *avContext = jniContext->codecContext;
++
++    uint8_t *inputBuffer = (uint8_t *) env->GetDirectBufferAddress(encodedData);
++    auto packet = av_packet_alloc();
++    packet->data = inputBuffer;
++    packet->size = length;
++    packet->pts = inputTimeUs;
++
++    int result = 0;
++    // Queue input data.
++    result = avcodec_send_packet(avContext, packet);
++    av_packet_free(&packet);
++    if (result) {
++        logError("avcodec_send_packet", result);
++        if (result == AVERROR_INVALIDDATA) {
++            // need more data
++            return VIDEO_DECODER_ERROR_INVALID_DATA;
++        } else if (result == AVERROR(EAGAIN)) {
++            // need read frame
++            return VIDEO_DECODER_ERROR_READ_FRAME;
++        } else {
++            return VIDEO_DECODER_ERROR_OTHER;
++        }
++    }
++    return result;
++}
++
++VIDEO_DECODER_FUNC(jint, ffmpegReceiveFrame, jlong jContext, jint outputMode, jobject jOutputBuffer,
++                   jboolean decodeOnly) {
++    JniContext *const jniContext = reinterpret_cast<JniContext *>(jContext);
++    AVCodecContext *avContext = jniContext->codecContext;
++    int result = 0;
++    AVFrame *raw_frame = av_frame_alloc();
++    if (!raw_frame) {
++        LOGE("Failed to allocate output frame.");
++        return VIDEO_DECODER_ERROR_OTHER;
++    }
++
++    result = avcodec_receive_frame(avContext, raw_frame);
++
++    if (decodeOnly || result == AVERROR(EAGAIN)) {
++        // This is not an error. The input data was decode-only or no displayable
++        // frames are available.
++        av_frame_free(&raw_frame);
++        return VIDEO_DECODER_ERROR_INVALID_DATA;
++    }
++
++    // Some error!
++    if (result != 0) {
++        av_frame_free(&raw_frame);
++        logError("avcodec_receive_frame", result);
++        return VIDEO_DECODER_ERROR_OTHER;
++    }
++
++    // Use swscale to cvt format to YUV420P
++    AVFrame *cvt_frame = cvt_format(jniContext, raw_frame, AV_PIX_FMT_YUV420P, raw_frame->width, raw_frame->height);
++    if (cvt_frame == nullptr) {
++        av_frame_free(&raw_frame);
++        LOGW("Convert To YUV420P failed.");
++        return VIDEO_DECODER_ERROR_OTHER;
++    }
++
++    // Convert Success! free the raw frame!
++    av_frame_free(&raw_frame);
++
++    int width = env->GetIntField(jOutputBuffer, jniContext->width_field);
++    int height = env->GetIntField(jOutputBuffer, jniContext->height_field);
++
++    auto dst_width = cvt_frame->width;
++    auto dst_height = cvt_frame->height;
++    int output_width = dst_width;
++    int output_height = dst_height;
++
++    // adjust rotate degree
++    if (jniContext->rotate_degree == 90 || jniContext->rotate_degree == 270) {
++        output_width = dst_height;
++        output_height = dst_width;
++    }
++    // adjust ColorSpace
++    int color_space = cvt_colorspace(cvt_frame->colorspace);
++
++    int stride_y = output_width;
++    int stride_uv = (output_width + 1) / 2;
++
++    jboolean init_result = JNI_TRUE;
++    if (width != output_width && height != output_height) {
++        // init data
++        init_result = env->CallBooleanMethod(jOutputBuffer, jniContext->init_for_yuv_frame_method,
++                                             output_width, output_height, stride_y, stride_uv, color_space);
++        LOGE("init_for_yuv_frame_method! wh [%d,%d], buffer wh [%d,%d]", output_width, output_height, width, height);
++    } else {
++        env->SetLongField(jOutputBuffer, jniContext->pts_field, cvt_frame->pts);
++    }
++
++    if (env->ExceptionCheck()) {
++        av_frame_free(&cvt_frame);
++        // Exception is thrown in Java when returning from the native call.
++        return VIDEO_DECODER_ERROR_OTHER;
++    }
++    if (!init_result) {
++        av_frame_free(&cvt_frame);
++        return VIDEO_DECODER_ERROR_OTHER;
++    }
++
++    auto data_object = env->GetObjectField(jOutputBuffer, jniContext->data_field);
++    auto *data = reinterpret_cast<uint8_t *>(env->GetDirectBufferAddress(data_object));
++
++    const int32_t height_uv = (output_height + 1) / 2;
++    const uint64_t length_y = stride_y * output_height;
++    const uint64_t length_uv = stride_uv * height_uv;
++
++    // rotate YUV data & copy to OutputBuffer
++    libyuv::RotationMode rotate = cvt_rotate(jniContext->rotate_degree);
++    libyuv::I420Rotate(
++            cvt_frame->data[0], cvt_frame->linesize[0],
++            cvt_frame->data[1], cvt_frame->linesize[1],
++            cvt_frame->data[2], cvt_frame->linesize[2],
++            data, stride_y,
++            data + length_y, stride_uv,
++            data + length_y + length_uv, stride_uv,
++            cvt_frame->width, cvt_frame->height, rotate
++    );
++    av_frame_free(&cvt_frame);
++    return result;
++}
++
++VIDEO_DECODER_FUNC(jint, ffmpegRenderFrame, jlong jContext, jobject jSurface,
++                   jobject jOutputBuffer, jint displayedWidth, jint displayedHeight) {
++    JniContext *const jniContext = reinterpret_cast<JniContext *>(jContext);
++    if (!jniContext->MaybeAcquireNativeWindow(env, jSurface)) {
++        return VIDEO_DECODER_ERROR_OTHER;
++    }
++
++    if (jniContext->native_window_width != displayedWidth ||
++        jniContext->native_window_height != displayedHeight) {
++        int rst = ANativeWindow_setBuffersGeometry(
++                jniContext->native_window,
++                displayedWidth,
++                displayedHeight,
++                kImageFormatYV12);
++        if (rst) {
++            LOGE("kJniStatusANativeWindowError ANativeWindow_setBuffersGeometry rst [%d]", rst);
++            return VIDEO_DECODER_ERROR_OTHER;
++        }
++        jniContext->native_window_width = displayedWidth;
++        jniContext->native_window_height = displayedHeight;
++    }
++
++    ANativeWindow_Buffer native_window_buffer;
++    int result = ANativeWindow_lock(jniContext->native_window, &native_window_buffer, nullptr);
++    if (result == -19) {
++        // Surface: dequeueBuffer failed (No such device)
++        jniContext->surface = nullptr;
++        return VIDEO_DECODER_ERROR_SURFACE;
++    } else if (result || native_window_buffer.bits == nullptr) {
++        LOGE("kJniStatusANativeWindowError ANativeWindow_lock rst [%d]", result);
++        return VIDEO_DECODER_ERROR_OTHER;
++    }
++
++    auto data_object = env->GetObjectField(jOutputBuffer, jniContext->data_field);
++    auto *data = reinterpret_cast<uint8_t *>(env->GetDirectBufferAddress(data_object));
++
++    auto frame_width = env->GetIntField(jOutputBuffer, jniContext->width_field);
++    auto frame_height = env->GetIntField(jOutputBuffer, jniContext->height_field);
++    int src_stride_y = frame_width;
++    int src_stride_uv = (frame_width + 1) / 2;
++    const int32_t height_uv = (frame_height + 1) / 2;
++    const uint64_t src_length_y = src_stride_y * frame_height;
++    const uint64_t src_length_uv = src_stride_uv * height_uv;
++
++    const int window_y_plane_size = native_window_buffer.stride * native_window_buffer.height;
++    const int32_t window_uv_plane_height = (native_window_buffer.height + 1) / 2;
++    const int window_uv_plane_stride = AlignTo16(native_window_buffer.stride / 2);
++    const int window_v_plane_height = std::min(window_uv_plane_height, native_window_buffer.height);
++    const int window_v_plane_size = window_v_plane_height * window_uv_plane_stride;
++    const auto window_bits = reinterpret_cast<uint8_t *>(native_window_buffer.bits);
++
++    libyuv::I420Copy(
++            data, src_stride_y,
++            data + src_length_y, src_stride_uv,
++            data + src_length_y + src_length_uv, src_stride_uv,
++            window_bits, native_window_buffer.stride,
++            window_bits + window_y_plane_size + window_v_plane_size, window_uv_plane_stride,
++            window_bits + window_y_plane_size, window_uv_plane_stride,
++            native_window_buffer.width, native_window_buffer.height
++    );
++    int rst = ANativeWindow_unlockAndPost(jniContext->native_window);
++    if (rst) {
++        LOGE("kJniStatusANativeWindowError ANativeWindow_unlockAndPost rst [%d]", rst);
++        return VIDEO_DECODER_ERROR_OTHER;
++    }
++
++    return VIDEO_DECODER_SUCCESS;
++}

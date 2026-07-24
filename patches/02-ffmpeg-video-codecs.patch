@@ -1,5 +1,5 @@
 diff --git a/libraries/decoder/src/main/java/androidx/media3/decoder/SimpleDecoder.java b/libraries/decoder/src/main/java/androidx/media3/decoder/SimpleDecoder.java
-index db4a49c354b67b7c1b68e4382286cba85c41ef58..2249ec2c157d9932b610d317a0584ddf245f1978 100644
+index db4a49c354..2249ec2c15 100644
 --- a/libraries/decoder/src/main/java/androidx/media3/decoder/SimpleDecoder.java
 +++ b/libraries/decoder/src/main/java/androidx/media3/decoder/SimpleDecoder.java
 @@ -50,6 +50,7 @@ public abstract class SimpleDecoder<
@@ -125,7 +125,7 @@ index db4a49c354b67b7c1b68e4382286cba85c41ef58..2249ec2c157d9932b610d317a0584ddf
     * Decodes the {@code inputBuffer} and stores any decoded output in {@code outputBuffer}.
     *
 diff --git a/libraries/decoder/src/test/java/androidx/media3/decoder/SimpleDecoderTest.java b/libraries/decoder/src/test/java/androidx/media3/decoder/SimpleDecoderTest.java
-index b27c41e2b73a269f53cc58013b638f02036cba0d..4ab17d3aa0c8b11703696068003b67e21ed6aa3f 100644
+index b27c41e2b7..4ab17d3aa0 100644
 --- a/libraries/decoder/src/test/java/androidx/media3/decoder/SimpleDecoderTest.java
 +++ b/libraries/decoder/src/test/java/androidx/media3/decoder/SimpleDecoderTest.java
 @@ -15,6 +15,7 @@
@@ -220,7 +220,7 @@ index b27c41e2b73a269f53cc58013b638f02036cba0d..4ab17d3aa0c8b11703696068003b67e2
    }
  }
 diff --git a/libraries/decoder_ffmpeg/proguard-rules.txt b/libraries/decoder_ffmpeg/proguard-rules.txt
-index aaf9280fd9b76c1a5eba14029d4fe2a104746742..45a89e819a8ff07a7f9ccd6bedb25f6ac810389d 100644
+index c53b832baa..41619bdb02 100644
 --- a/libraries/decoder_ffmpeg/proguard-rules.txt
 +++ b/libraries/decoder_ffmpeg/proguard-rules.txt
 @@ -9,3 +9,10 @@
@@ -235,10 +235,10 @@ index aaf9280fd9b76c1a5eba14029d4fe2a104746742..45a89e819a8ff07a7f9ccd6bedb25f6a
 +  long timeUs;
 +}
 diff --git a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoDecoder.java b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoDecoder.java
-index 9cc7f561a0dd006cad38282ede9f3a7ff7e69932..cb61ea5a0d744f4613dd6fae853830e1e5fb5d14 100644
+index 887d2403a1..849d3980ee 100644
 --- a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoDecoder.java
 +++ b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoDecoder.java
-@@ -47,13 +47,18 @@ import java.util.List;
+@@ -32,13 +32,18 @@ import java.util.List;
    private static final int VIDEO_DECODER_SUCCESS = 0;
    private static final int VIDEO_DECODER_ERROR_INVALID_DATA = -1;
    private static final int VIDEO_DECODER_ERROR_OTHER = -2;
@@ -258,7 +258,7 @@ index 9cc7f561a0dd006cad38282ede9f3a7ff7e69932..cb61ea5a0d744f4613dd6fae853830e1
    @C.VideoOutputMode
    private volatile int outputMode;
  
-@@ -78,8 +83,10 @@ import java.util.List;
+@@ -63,8 +68,10 @@ import java.util.List;
      if (!FfmpegLibrary.isAvailable()) {
        throw new FfmpegDecoderException("Failed to load decoder native library.");
      }
@@ -266,11 +266,29 @@ index 9cc7f561a0dd006cad38282ede9f3a7ff7e69932..cb61ea5a0d744f4613dd6fae853830e1
 +    nativeContextLock = new Object();
 +    codecName = Assertions.checkNotNull(FfmpegLibrary.getCodecName(format));
      extraData = getExtraData(format.sampleMimeType, format.initializationData);
-+    outputFormat = format;
++    outputFormat = getDecodedOutputFormat(format);
      degree = format.rotationDegrees;
      nativeContext = ffmpegInitialize(codecName, extraData, threads, degree);
      if (nativeContext == 0) {
-@@ -125,7 +132,9 @@ import java.util.List;
+@@ -94,6 +101,17 @@ import java.util.List;
+     return null;
+   }
+ 
++  static Format getDecodedOutputFormat(Format format) {
++    if (format.rotationDegrees == 0) {
++      return format;
++    }
++    Format.Builder outputFormat = format.buildUpon().setRotationDegrees(0);
++    if (format.rotationDegrees == 90 || format.rotationDegrees == 270) {
++      outputFormat.setPixelWidthHeightRatio(1f / format.pixelWidthHeightRatio);
++    }
++    return outputFormat.build();
++  }
++
+   @Override
+   public String getName() {
+     return "ffmpeg" + FfmpegLibrary.getVersion() + "-" + codecName;
+@@ -110,7 +128,9 @@ import java.util.List;
  
    @Override
    protected DecoderInputBuffer createInputBuffer() {
@@ -281,7 +299,7 @@ index 9cc7f561a0dd006cad38282ede9f3a7ff7e69932..cb61ea5a0d744f4613dd6fae853830e1
    }
  
    @Override
-@@ -133,57 +142,120 @@ import java.util.List;
+@@ -118,57 +138,120 @@ import java.util.List;
      return new VideoDecoderOutputBuffer(this::releaseOutputBuffer);
    }
  
@@ -319,7 +337,7 @@ index 9cc7f561a0dd006cad38282ede9f3a7ff7e69932..cb61ea5a0d744f4613dd6fae853830e1
 -    int sendPacketResult = ffmpegSendPacket(nativeContext, inputData, inputSize,
 -        inputBuffer.timeUs);
 +    if (inputBuffer.format != null) {
-+      outputFormat = inputBuffer.format;
++      outputFormat = getDecodedOutputFormat(inputBuffer.format);
 +    }
 +    int sendPacketResult =
 +        ffmpegSendPacket(nativeContext, inputData, inputSize, inputBuffer.timeUs);
@@ -419,7 +437,7 @@ index 9cc7f561a0dd006cad38282ede9f3a7ff7e69932..cb61ea5a0d744f4613dd6fae853830e1
    @Override
    protected FfmpegDecoderException createUnexpectedDecodeException(Throwable error) {
      return new FfmpegDecoderException("Unexpected decode error", error);
-@@ -192,8 +264,12 @@ import java.util.List;
+@@ -177,8 +260,12 @@ import java.util.List;
    @Override
    public void release() {
      super.release();
@@ -434,7 +452,7 @@ index 9cc7f561a0dd006cad38282ede9f3a7ff7e69932..cb61ea5a0d744f4613dd6fae853830e1
    }
  
    /**
-@@ -202,19 +278,30 @@ import java.util.List;
+@@ -187,19 +274,30 @@ import java.util.List;
     *
     * @param outputBuffer Output buffer.
     * @param surface      Output surface.
@@ -472,7 +490,7 @@ index 9cc7f561a0dd006cad38282ede9f3a7ff7e69932..cb61ea5a0d744f4613dd6fae853830e1
      }
    }
  
-@@ -225,6 +312,8 @@ import java.util.List;
+@@ -210,6 +308,8 @@ import java.util.List;
  
    private native void ffmpegRelease(long context);
  
@@ -481,7 +499,7 @@ index 9cc7f561a0dd006cad38282ede9f3a7ff7e69932..cb61ea5a0d744f4613dd6fae853830e1
    private native int ffmpegRenderFrame(
        long context, Surface surface, VideoDecoderOutputBuffer outputBuffer,
        int displayedWidth,
-@@ -239,7 +328,7 @@ import java.util.List;
+@@ -224,7 +324,7 @@ import java.util.List;
     * @return {@link #VIDEO_DECODER_SUCCESS} if successful, {@link #VIDEO_DECODER_ERROR_OTHER} if an
     * error occurred.
     */
@@ -491,15 +509,20 @@ index 9cc7f561a0dd006cad38282ede9f3a7ff7e69932..cb61ea5a0d744f4613dd6fae853830e1
  
    /**
 diff --git a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java
-index 6b087d66ba57fbf7f6cc4e030eb2c5f55a52cb80..7eb0e0cdaf284fbe23c58d9c529d1171da3c2390 100644
+index 6b087d66ba..7eb0e0cdaf 100644
 --- a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java
 +++ b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/ExperimentalFfmpegVideoRenderer.java
-@@ -50 +50,4 @@ public final class ExperimentalFfmpegVideoRenderer extends DecoderVideoRenderer
+@@ -47,6 +47,9 @@ public final class ExperimentalFfmpegVideoRenderer extends DecoderVideoRenderer
+ 
+   private static final String TAG = "ExperimentalFfmpegVideoRenderer";
+ 
 +  private static final long DROP_OUTPUT_BUFFER_THRESHOLD_US = 500_000;
 +  private static final long DROP_TO_KEYFRAME_THRESHOLD_US = 2_000_000;
 +
    private static final int DEFAULT_NUM_OF_INPUT_BUFFERS = 4;
-@@ -131,7 +131,7 @@ public final class ExperimentalFfmpegVideoRenderer extends DecoderVideoRenderer
+   private static final int DEFAULT_NUM_OF_OUTPUT_BUFFERS = 4;
+ 
+@@ -131,7 +134,7 @@ public final class ExperimentalFfmpegVideoRenderer extends DecoderVideoRenderer
      String mimeType = format.sampleMimeType;
      if (!FfmpegLibrary.isAvailable() || !MimeTypes.isVideo(mimeType)) {
        return RendererCapabilities.create(C.FORMAT_UNSUPPORTED_TYPE);
@@ -508,7 +531,7 @@ index 6b087d66ba57fbf7f6cc4e030eb2c5f55a52cb80..7eb0e0cdaf284fbe23c58d9c529d1171
        return RendererCapabilities.create(C.FORMAT_UNSUPPORTED_SUBTYPE);
      } else if (format.cryptoType != C.CRYPTO_TYPE_NONE) {
        return RendererCapabilities.create(C.FORMAT_UNSUPPORTED_DRM);
-@@ -164,11 +164,40 @@ public final class ExperimentalFfmpegVideoRenderer extends DecoderVideoRenderer
+@@ -164,11 +167,40 @@ public final class ExperimentalFfmpegVideoRenderer extends DecoderVideoRenderer
    protected void renderOutputBufferToSurface(VideoDecoderOutputBuffer outputBuffer, Surface surface)
        throws FfmpegDecoderException {
      if (decoder == null) {
@@ -532,7 +555,7 @@ index 6b087d66ba57fbf7f6cc4e030eb2c5f55a52cb80..7eb0e0cdaf284fbe23c58d9c529d1171
 +    } finally {
 +      decoder = null;
 +    }
-   }
++  }
 +
 +  @Override
 +  protected boolean shouldDropOutputBuffer(long earlyUs, long elapsedRealtimeUs) {
@@ -548,11 +571,11 @@ index 6b087d66ba57fbf7f6cc4e030eb2c5f55a52cb80..7eb0e0cdaf284fbe23c58d9c529d1171
 +  @Override
 +  protected boolean shouldDropBuffersToKeyframe(long earlyUs, long elapsedRealtimeUs) {
 +    return earlyUs < -DROP_TO_KEYFRAME_THRESHOLD_US;
-+  }
+   }
  
    @Override
 diff --git a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java
-index 7dbc569dd137c004cbba1fbdd5524b04b26d4d47..876bb1a4781cc8504cba9ee630859860c32e310a 100644
+index 7dbc569dd1..d7bfc5601a 100644
 --- a/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java
 +++ b/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java
 @@ -17,8 +17,10 @@ package androidx.media3.decoder.ffmpeg;
@@ -601,7 +624,20 @@ index 7dbc569dd137c004cbba1fbdd5524b04b26d4d47..876bb1a4781cc8504cba9ee630859860
    /**
     * Returns the name of the FFmpeg decoder that could be used to decode the format, or {@code null}
     * if it's unsupported.
-@@ -154,21 +175,31 @@ public final class FfmpegLibrary {
+@@ -124,9 +145,11 @@ public final class FfmpegLibrary {
+       case MimeTypes.AUDIO_AAC:
+         return "aac";
+       case MimeTypes.AUDIO_MPEG:
++        return "mp3";
+       case MimeTypes.AUDIO_MPEG_L1:
++        return "mp1";
+       case MimeTypes.AUDIO_MPEG_L2:
+-        return "mp3";
++        return "mp2";
+       case MimeTypes.AUDIO_AC3:
+         return "ac3";
+       case MimeTypes.AUDIO_E_AC3:
+@@ -154,21 +177,42 @@ public final class FfmpegLibrary {
          return "pcm_mulaw";
        case MimeTypes.AUDIO_ALAW:
          return "pcm_alaw";
@@ -612,12 +648,16 @@ index 7dbc569dd137c004cbba1fbdd5524b04b26d4d47..876bb1a4781cc8504cba9ee630859860
        case MimeTypes.VIDEO_H265:
 -      case MimeTypes.VIDEO_DOLBY_VISION:
          return "hevc";
++      case MimeTypes.VIDEO_AV1:
++        return "av1";
        case MimeTypes.VIDEO_VP8:
          return "vp8";
        case MimeTypes.VIDEO_VP9:
          return "vp9";
 -      case MimeTypes.VIDEO_WEBM:
 -        return "webm";
++      case MimeTypes.VIDEO_FLV:
++        return "flv";
        case MimeTypes.VIDEO_MPEG:
 -        return "mpegvideo";
 +        return "mpeg1video";
@@ -634,88 +674,18 @@ index 7dbc569dd137c004cbba1fbdd5524b04b26d4d47..876bb1a4781cc8504cba9ee630859860
 +        return "h263";
 +      case MimeTypes.VIDEO_VC1:
 +        return "vc1";
++      case "video/x-ms-wmv":
++      case "video/x-ms-wmv3":
++        return "wmv3";
++      case "video/x-ms-wmv1":
++        return "wmv1";
++      case "video/x-ms-wmv2":
++        return "wmv2";
        default:
          return null;
      }
-@@ -179,4 +210,4 @@ public final class FfmpegLibrary {
-   private static native int ffmpegGetInputBufferPaddingSize();
- 
-   private static native boolean ffmpegHasDecoder(String codecName);
--}
-\ No newline at end of file
-+}
-diff --git a/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt b/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
-index 5cbcb5b3126b07d38a03092a2fb8b994514ee222..64edb9c6cf7699ea2ec6fad519908996f2ccccda 100644
---- a/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
-+++ b/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
-@@ -27,11 +27,11 @@ set(ffmpeg_location "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg")
- set(ffmpeg_binaries "${ffmpeg_location}/android-libs/${ANDROID_ABI}")
- 
- foreach(ffmpeg_lib avutil swresample avcodec swscale)
--    set(ffmpeg_lib_filename lib${ffmpeg_lib}.so)
-+    set(ffmpeg_lib_filename lib${ffmpeg_lib}.a)
-     set(ffmpeg_lib_file_path ${ffmpeg_binaries}/${ffmpeg_lib_filename})
-     add_library(
-             ${ffmpeg_lib}
--            SHARED
-+            STATIC
-             IMPORTED)
-     set_target_properties(
-             ${ffmpeg_lib} PROPERTIES
-@@ -41,20 +41,9 @@ endforeach()
- 
- 
- set(yuv_location "${CMAKE_CURRENT_SOURCE_DIR}/libyuv")
--set(yuv_binaries "${yuv_location}/android-libs/${ANDROID_ABI}")
--
--foreach(yuv_lib yuv)
--    set(yuv_lib_filename lib${yuv_lib}.so)
--    set(yuv_lib_file_path ${yuv_binaries}/${yuv_lib_filename})
--    add_library(
--            ${yuv_lib}
--            SHARED
--            IMPORTED)
--    set_target_properties(
--            ${yuv_lib} PROPERTIES
--            IMPORTED_LOCATION
--            ${yuv_lib_file_path})
--endforeach()
-+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-+set(UNIT_TEST OFF CACHE BOOL "" FORCE)
-+add_subdirectory(${yuv_location} libyuv-build EXCLUDE_FROM_ALL)
- 
- 
- include_directories(${ffmpeg_location})
-@@ -80,4 +69,3 @@ target_link_libraries(ffmpegJNI
- if(ANDROID_ABI STREQUAL "arm64-v8a")
-     target_link_options(ffmpegJNI PRIVATE "-Wl,-Bsymbolic")
- endif()
--
-diff --git a/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh b/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
-index 91d79369ae766d49fd63d2f5affe759b8a3eddd5..cc05734e41f396755e5777f4565bb87eaa80956a 100755
---- a/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
-+++ b/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
-@@ -30,15 +30,14 @@ JOBS="$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)"
- echo "Using $JOBS jobs for make"
- COMMON_OPTIONS="
-     --target-os=android
--    --disable-static
--    --enable-shared
-+    --enable-static
-+    --disable-shared
-     --disable-doc
-     --disable-programs
-     --disable-everything
-     --disable-avdevice
--    --enable-avformat
-+    --disable-avformat
-     --enable-swscale
--    --disable-postproc
-     --disable-avfilter
-     --disable-symver
-     --enable-swresample
 diff --git a/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc b/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
-index afb92bc29a0834eb35977620619a71945bdca457..e75f263df238cc880b91a4299941b04d1baba5b7 100644
+index 768386083a..5426725977 100644
 --- a/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
 +++ b/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
 @@ -14,11 +14,19 @@
@@ -751,7 +721,7 @@ index afb92bc29a0834eb35977620619a71945bdca457..e75f263df238cc880b91a4299941b04d
  
  static jmethodID growOutputBufferMethod;
  
-@@ -310,7 +319,7 @@ AVCodecContext* createContext(JNIEnv* env, const AVCodec* codec,
+@@ -288,7 +297,7 @@ AVCodecContext* createContext(JNIEnv* env, const AVCodec* codec,
      jsize size = env->GetArrayLength(extraData);
      context->extradata_size = size;
      context->extradata =
@@ -760,7 +730,7 @@ index afb92bc29a0834eb35977620619a71945bdca457..e75f263df238cc880b91a4299941b04d
      if (!context->extradata) {
        LOGE("Failed to allocate extradata.");
        releaseContext(context);
-@@ -436,11 +445,28 @@ int transformError(int errorNumber) {
+@@ -414,11 +423,28 @@ int transformError(int errorNumber) {
                                              : AUDIO_DECODER_ERROR_OTHER;
  }
  
@@ -791,7 +761,7 @@ index afb92bc29a0834eb35977620619a71945bdca457..e75f263df238cc880b91a4299941b04d
  }
  
  void releaseContext(AVCodecContext* context) {
-@@ -460,45 +486,146 @@ void releaseContext(AVCodecContext* context) {
+@@ -502,45 +528,146 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved) {
  // Android YUV format. See:
  // https://developer.android.com/reference/android/graphics/ImageFormat.html#YV12.
  const int kImageFormatYV12 = 0x32315659;
@@ -949,7 +919,7 @@ index afb92bc29a0834eb35977620619a71945bdca457..e75f263df238cc880b91a4299941b04d
  
      ANativeWindow *native_window = nullptr;
      jobject surface = nullptr;
-@@ -506,71 +633,48 @@ struct JniContext {
+@@ -548,71 +675,48 @@ struct JniContext {
      int rotate_degree = 0;
      int native_window_width = 0;
      int native_window_height = 0;
@@ -1048,7 +1018,7 @@ index afb92bc29a0834eb35977620619a71945bdca457..e75f263df238cc880b91a4299941b04d
  }
  
  /**
-@@ -589,16 +693,306 @@ libyuv::RotationMode cvt_rotate(int degree) {
+@@ -631,16 +735,306 @@ libyuv::RotationMode cvt_rotate(int degree) {
      return rotate;
  }
  
@@ -1355,7 +1325,7 @@ index afb92bc29a0834eb35977620619a71945bdca457..e75f263df238cc880b91a4299941b04d
          return NULL;
      }
  
-@@ -608,10 +1002,11 @@ JniContext *createVideoContext(JNIEnv *env,
+@@ -650,10 +1044,11 @@ JniContext *createVideoContext(JNIEnv *env,
      if (extraData) {
          jsize size = env->GetArrayLength(extraData);
          codecContext->extradata_size = size;
@@ -1368,7 +1338,7 @@ index afb92bc29a0834eb35977620619a71945bdca457..e75f263df238cc880b91a4299941b04d
              return NULL;
          }
          env->GetByteArrayRegion(extraData, 0, size, (jbyte *) codecContext->extradata);
-@@ -623,10 +1018,16 @@ JniContext *createVideoContext(JNIEnv *env,
+@@ -665,10 +1060,16 @@ JniContext *createVideoContext(JNIEnv *env,
      codecContext->thread_count = threads;
      codecContext->thread_type = FF_THREAD_FRAME;
      codecContext->err_recognition = AV_EF_IGNORE_ERR;
@@ -1385,7 +1355,7 @@ index afb92bc29a0834eb35977620619a71945bdca457..e75f263df238cc880b91a4299941b04d
          return NULL;
      }
  
-@@ -638,17 +1039,15 @@ JniContext *createVideoContext(JNIEnv *env,
+@@ -680,17 +1081,15 @@ JniContext *createVideoContext(JNIEnv *env,
      jniContext->width_field = env->GetFieldID(outputBufferClass, "width", "I");
      jniContext->height_field = env->GetFieldID(outputBufferClass, "height", "I");
      jniContext->pts_field = env->GetFieldID(outputBufferClass, "timeUs", "J");
@@ -1407,7 +1377,7 @@ index afb92bc29a0834eb35977620619a71945bdca457..e75f263df238cc880b91a4299941b04d
  
      return jniContext;
  }
-@@ -678,218 +1077,330 @@ VIDEO_DECODER_FUNC(jlong, ffmpegReset, jlong jContext) {
+@@ -720,215 +1119,329 @@ VIDEO_DECODER_FUNC(jlong, ffmpegReset, jlong jContext) {
  }
  
  VIDEO_DECODER_FUNC(void, ffmpegRelease, jlong jContext) {
@@ -1561,13 +1531,13 @@ index afb92bc29a0834eb35977620619a71945bdca457..e75f263df238cc880b91a4299941b04d
 -        LOGW("Convert To YUV420P failed.");
 -        return VIDEO_DECODER_ERROR_OTHER;
 +        return VIDEO_DECODER_ERROR_INVALID_DATA;
-     }
++    }
 +    const int unrecoverable_decode_errors =
 +            raw_frame->decode_error_flags & ~FF_DECODE_ERROR_CONCEALMENT_ACTIVE;
 +    if ((raw_frame->flags & AV_FRAME_FLAG_CORRUPT) || unrecoverable_decode_errors != 0) {
 +        av_frame_free(&raw_frame);
 +        return VIDEO_DECODER_ERROR_INVALID_DATA;
-+    }
+     }
  
 -    // Convert Success! free the raw frame!
 -    av_frame_free(&raw_frame);
@@ -1874,30 +1844,12 @@ index afb92bc29a0834eb35977620619a71945bdca457..e75f263df238cc880b91a4299941b04d
      }
  
      return VIDEO_DECODER_SUCCESS;
- }
--
--
 diff --git a/libraries/decoder_ffmpeg/src/test/java/androidx/media3/decoder/ffmpeg/FfmpegLibraryTest.java b/libraries/decoder_ffmpeg/src/test/java/androidx/media3/decoder/ffmpeg/FfmpegLibraryTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..7a5cc262528f38696d65b947bb21fbde29f17750
+index 0000000000..c93f2cf718
 --- /dev/null
 +++ b/libraries/decoder_ffmpeg/src/test/java/androidx/media3/decoder/ffmpeg/FfmpegLibraryTest.java
-@@ -0,0 +1,70 @@
-+/*
-+ * Copyright (C) 2026 The Android Open Source Project
-+ *
-+ * Licensed under the Apache License, Version 2.0 (the "License");
-+ * you may not use this file except in compliance with the License.
-+ * You may obtain a copy of the License at
-+ *
-+ *      http://www.apache.org/licenses/LICENSE-2.0
-+ *
-+ * Unless required by applicable law or agreed to in writing, software
-+ * distributed under the License is distributed on an "AS IS" BASIS,
-+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-+ * See the License for the specific language governing permissions and
-+ * limitations under the License.
-+ */
+@@ -0,0 +1,81 @@
 +package androidx.media3.decoder.ffmpeg;
 +
 +import static com.google.common.truth.Truth.assertThat;
@@ -1913,7 +1865,7 @@ index 0000000000000000000000000000000000000000..7a5cc262528f38696d65b947bb21fbde
 +public final class FfmpegLibraryTest {
 +
 +  @Test
-+  public void getCodecName_usesDolbyVisionBaseLayerAndRejectsContainers() {
++  public void getCodecName_usesDolbyVisionBaseLayer() {
 +    Format hevcDolbyVision =
 +        new Format.Builder()
 +            .setSampleMimeType(MimeTypes.VIDEO_DOLBY_VISION)
@@ -1932,8 +1884,34 @@ index 0000000000000000000000000000000000000000..7a5cc262528f38696d65b947bb21fbde
 +
 +    assertThat(FfmpegLibrary.getCodecName(hevcDolbyVision)).isEqualTo("hevc");
 +    assertThat(FfmpegLibrary.getCodecName(h264DolbyVision)).isEqualTo("h264");
-+    assertThat(FfmpegLibrary.getCodecName(av1DolbyVision)).isNull();
-+    assertThat(FfmpegLibrary.getCodecName(MimeTypes.VIDEO_FLV)).isNull();
++    assertThat(FfmpegLibrary.getCodecName(av1DolbyVision)).isEqualTo("av1");
++  }
++
++  @Test
++  public void getCodecName_mapsAdditionalSoftwareFallbacks() {
++    assertThat(FfmpegLibrary.getCodecName(MimeTypes.AUDIO_MPEG_L1)).isEqualTo("mp1");
++    assertThat(FfmpegLibrary.getCodecName(MimeTypes.AUDIO_MPEG_L2)).isEqualTo("mp2");
++    assertThat(FfmpegLibrary.getCodecName(MimeTypes.VIDEO_AV1)).isEqualTo("av1");
++    assertThat(FfmpegLibrary.getCodecName(MimeTypes.VIDEO_FLV)).isEqualTo("flv");
++    assertThat(FfmpegLibrary.getCodecName("video/x-ms-wmv")).isEqualTo("wmv3");
++    assertThat(FfmpegLibrary.getCodecName("video/x-ms-wmv1")).isEqualTo("wmv1");
++    assertThat(FfmpegLibrary.getCodecName("video/x-ms-wmv2")).isEqualTo("wmv2");
++    assertThat(FfmpegLibrary.getCodecName("video/x-ms-wmv3")).isEqualTo("wmv3");
++  }
++
++  @Test
++  public void getDecodedOutputFormat_rotatedAnamorphicVideo_resetsRotationAndInvertsRatio() {
++    Format inputFormat =
++        new Format.Builder()
++            .setSampleMimeType(MimeTypes.VIDEO_H264)
++            .setRotationDegrees(90)
++            .setPixelWidthHeightRatio(4f / 3f)
++            .build();
++
++    Format outputFormat = ExperimentalFfmpegVideoDecoder.getDecodedOutputFormat(inputFormat);
++
++    assertThat(outputFormat.rotationDegrees).isEqualTo(0);
++    assertThat(outputFormat.pixelWidthHeightRatio).isEqualTo(3f / 4f);
 +  }
 +
 +  @Test
@@ -1953,3 +1931,96 @@ index 0000000000000000000000000000000000000000..7a5cc262528f38696d65b947bb21fbde
 +    assertThat(renderer.shouldDropBuffersToKeyframe(-2_000_001, 0)).isTrue();
 +  }
 +}
+diff --git a/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/video/DecoderVideoRenderer.java b/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/video/DecoderVideoRenderer.java
+index fcc7ea16ab..b9c01a4f2f 100644
+--- a/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/video/DecoderVideoRenderer.java
++++ b/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/video/DecoderVideoRenderer.java
+@@ -675,7 +675,8 @@ public abstract class DecoderVideoRenderer extends BaseRenderer implements Decod
+     if (!renderYuv && !renderSurface) {
+       dropOutputBuffer(outputBuffer);
+     } else {
+-      maybeNotifyVideoSizeChanged(outputBuffer.width, outputBuffer.height);
++      maybeNotifyVideoSizeChanged(
++          outputBuffer.width, outputBuffer.height, outputFormat.pixelWidthHeightRatio);
+       if (renderYuv) {
+         checkNotNull(outputBufferRenderer).setOutputBuffer(outputBuffer);
+       } else {
+@@ -1063,12 +1064,11 @@ public abstract class DecoderVideoRenderer extends BaseRenderer implements Decod
+     }
+   }
+ 
+-  private void maybeNotifyVideoSizeChanged(int width, int height) {
+-    if (reportedVideoSize == null
+-        || reportedVideoSize.width != width
+-        || reportedVideoSize.height != height) {
+-      reportedVideoSize = new VideoSize(width, height);
+-      eventDispatcher.videoSizeChanged(reportedVideoSize);
++  private void maybeNotifyVideoSizeChanged(int width, int height, float pixelWidthHeightRatio) {
++    VideoSize videoSize = new VideoSize(width, height, pixelWidthHeightRatio);
++    if (!videoSize.equals(reportedVideoSize)) {
++      reportedVideoSize = videoSize;
++      eventDispatcher.videoSizeChanged(videoSize);
+     }
+   }
+ 
+diff --git a/libraries/exoplayer/src/test/java/androidx/media3/exoplayer/video/DecoderVideoRendererTest.java b/libraries/exoplayer/src/test/java/androidx/media3/exoplayer/video/DecoderVideoRendererTest.java
+index f9d2aebe1c..b00f99ec8a 100644
+--- a/libraries/exoplayer/src/test/java/androidx/media3/exoplayer/video/DecoderVideoRendererTest.java
++++ b/libraries/exoplayer/src/test/java/androidx/media3/exoplayer/video/DecoderVideoRendererTest.java
+@@ -33,6 +33,7 @@ import androidx.annotation.Nullable;
+ import androidx.media3.common.C;
+ import androidx.media3.common.Format;
+ import androidx.media3.common.MimeTypes;
++import androidx.media3.common.VideoSize;
+ import androidx.media3.common.util.Clock;
+ import androidx.media3.decoder.CryptoConfig;
+ import androidx.media3.decoder.Decoder;
+@@ -179,6 +180,8 @@ public final class DecoderVideoRendererTest {
+                   VideoDecoderOutputBuffer outputBuffer,
+                   boolean reset) {
+                 outputBuffer.init(inputBuffer.timeUs, outputMode, /* supplementalData= */ null);
++                outputBuffer.initForPrivateFrame(
++                    H264_FORMAT.width, H264_FORMAT.height);
+                 return null;
+               }
+ 
+@@ -307,6 +310,39 @@ public final class DecoderVideoRendererTest {
+     surface.release();
+   }
+ 
++  @Test
++  public void render_anamorphicFormat_reportsPixelWidthHeightRatio() throws Exception {
++    Format format =
++        H264_FORMAT.buildUpon().setPixelWidthHeightRatio(4f / 3f).build();
++    FakeSampleStream fakeSampleStream =
++        new FakeSampleStream(
++            new DefaultAllocator(/* trimOnReset= */ true, /* individualAllocationSize= */ 1024),
++            /* mediaSourceEventDispatcher= */ null,
++            DrmSessionManager.DRM_UNSUPPORTED,
++            new DrmSessionEventListener.EventDispatcher(),
++            /* initialFormat= */ format,
++            ImmutableList.of(oneByteSample(/* timeUs= */ 0, C.BUFFER_FLAG_KEY_FRAME)));
++    fakeSampleStream.writeData(/* startPositionUs= */ 0);
++
++    renderer.enable(
++        RendererConfiguration.DEFAULT,
++        new Format[] {format},
++        fakeSampleStream,
++        /* positionUs= */ 0,
++        /* joining= */ false,
++        /* mayRenderStartOfStream= */ true,
++        /* startPositionUs= */ 0,
++        /* offsetUs= */ 0,
++        new MediaSource.MediaPeriodId(new Object()));
++    for (int i = 0; i < 10; i++) {
++      renderer.render(/* positionUs= */ 0, SystemClock.elapsedRealtime() * 1000);
++      ShadowLooper.idleMainLooper();
++    }
++
++    verify(eventListener)
++        .onVideoSizeChanged(new VideoSize(H264_FORMAT.width, H264_FORMAT.height, 4f / 3f));
++  }
++
+   @Test
+   public void enable_withMayRenderStartOfStream_rendersFirstFrameBeforeStart() throws Exception {
+     FakeSampleStream fakeSampleStream =

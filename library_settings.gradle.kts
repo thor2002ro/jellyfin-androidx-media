@@ -1,58 +1,46 @@
 val mediaRootDir = file(System.getenv("ANDROIDX_MEDIA_ROOT") ?: "media")
-
 val modulePrefix = ":androidx-media-"
+
 gradle.extra["androidxMediaModulePrefix"] = modulePrefix
-
 if (!gradle.extra.has("androidxMediaSettingsDir")) {
-    gradle.extra["androidxMediaSettingsDir"] = mediaRootDir.getCanonicalPath()
+    gradle.extra["androidxMediaSettingsDir"] = mediaRootDir.canonicalPath
 }
 
-include(modulePrefix + "lib-common")
-project(modulePrefix + "lib-common").projectDir = File(mediaRootDir, "libraries/common")
+data class Media3Module(
+    val name: String,
+    val libraryDirectory: String,
+    val optional: Boolean = false,
+)
 
-include(modulePrefix + "lib-container")
-project(modulePrefix + "lib-container").projectDir = File(mediaRootDir, "libraries/container")
+fun includeMedia3Module(module: Media3Module) {
+    val projectDir = mediaRootDir.resolve("libraries/${module.libraryDirectory}")
+    if (module.optional && !projectDir.isDirectory) {
+        return
+    }
 
-include(modulePrefix + "lib-exoplayer")
-project(modulePrefix + "lib-exoplayer").projectDir = File(mediaRootDir, "libraries/exoplayer")
-
-include(modulePrefix + "lib-exoplayer-dash")
-project(modulePrefix + "lib-exoplayer-dash").projectDir = File(mediaRootDir, "libraries/exoplayer_dash")
-
-include(modulePrefix + "lib-database")
-project(modulePrefix + "lib-database").projectDir = File(mediaRootDir, "libraries/database")
-
-include(modulePrefix + "lib-datasource")
-project(modulePrefix + "lib-datasource").projectDir = File(mediaRootDir, "libraries/datasource")
-
-include(modulePrefix + "lib-decoder")
-project(modulePrefix + "lib-decoder").projectDir = File(mediaRootDir, "libraries/decoder")
-include(modulePrefix + "lib-decoder-ffmpeg")
-project(modulePrefix + "lib-decoder-ffmpeg").projectDir = File(mediaRootDir, "libraries/decoder_ffmpeg")
-
-include(modulePrefix + "lib-extractor")
-project(modulePrefix + "lib-extractor").projectDir = File(mediaRootDir, "libraries/extractor")
-
-include(modulePrefix + "lib-effect")
-project(modulePrefix + "lib-effect").projectDir = File(mediaRootDir, "libraries/effect")
-
-include(modulePrefix + "lib-inspector")
-project(modulePrefix + "lib-inspector").projectDir = File(mediaRootDir, "libraries/inspector")
-
-File(mediaRootDir, "libraries/inspector_frame").takeIf(File::isDirectory)?.let { projectDir ->
-    include(modulePrefix + "lib-inspector-frame")
-    project(modulePrefix + "lib-inspector-frame").projectDir = projectDir
+    val projectPath = "$modulePrefix${module.name}"
+    include(projectPath)
+    project(projectPath).projectDir = projectDir
 }
 
-include(modulePrefix + "lib-muxer")
-project(modulePrefix + "lib-muxer").projectDir = File(mediaRootDir, "libraries/muxer")
-
-include(modulePrefix + "lib-transformer")
-project(modulePrefix + "lib-transformer").projectDir = File(mediaRootDir, "libraries/transformer")
-
-include(modulePrefix + "test-utils-robolectric")
-project(modulePrefix + "test-utils-robolectric").projectDir = File(mediaRootDir, "libraries/test_utils_robolectric")
-include(modulePrefix + "test-data")
-project(modulePrefix + "test-data").projectDir = File(mediaRootDir, "libraries/test_data")
-include(modulePrefix + "test-utils")
-project(modulePrefix + "test-utils").projectDir = File(mediaRootDir, "libraries/test_utils")
+// Keep each Gradle project beside its upstream directory. The optional flag is
+// explicit because inspector_frame is not present in every supported revision.
+listOf(
+    Media3Module("lib-common", "common"),
+    Media3Module("lib-container", "container"),
+    Media3Module("lib-exoplayer", "exoplayer"),
+    Media3Module("lib-exoplayer-dash", "exoplayer_dash"),
+    Media3Module("lib-database", "database"),
+    Media3Module("lib-datasource", "datasource"),
+    Media3Module("lib-decoder", "decoder"),
+    Media3Module("lib-decoder-ffmpeg", "decoder_ffmpeg"),
+    Media3Module("lib-extractor", "extractor"),
+    Media3Module("lib-effect", "effect"),
+    Media3Module("lib-inspector", "inspector"),
+    Media3Module("lib-inspector-frame", "inspector_frame", optional = true),
+    Media3Module("lib-muxer", "muxer"),
+    Media3Module("lib-transformer", "transformer"),
+    Media3Module("test-utils-robolectric", "test_utils_robolectric"),
+    Media3Module("test-data", "test_data"),
+    Media3Module("test-utils", "test_utils"),
+).forEach { module -> includeMedia3Module(module) }
