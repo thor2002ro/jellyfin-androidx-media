@@ -49,7 +49,9 @@ Media pull requests, then applies the numbered local patches in [`patches/`](pat
   coverage.
 - [PR 3330](https://github.com/androidx/media/pull/3330): 14-bit DTS frame-size
   calculation.
-
+- [PR 3351](https://github.com/androidx/media/pull/3351): HDR image handling.
+- [PR 3344](https://github.com/androidx/media/pull/3344): Dolby Vision playback
+  with an SDR fallback.
 The Media3 base is resolved at build time. Pass a branch, tag, or other valid
 Media3 ref when a build must use something other than `origin/main`.
 

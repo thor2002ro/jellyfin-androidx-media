@@ -88,6 +88,8 @@ media_prs=(
     3055:release
     3092:release
     3330:main
+    3351:main
+    3344:main
 )
 
 case "${ffmpeg_static_mode}" in
