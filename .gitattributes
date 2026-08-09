@@ -1,0 +1,6 @@
+# Keep platform entry points usable after every checkout.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.sh text eol=lf
+*.patch text eol=lf
+gradlew text eol=lf
