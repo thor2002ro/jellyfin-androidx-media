@@ -1,0 +1,3 @@
+artifact_version=latest-SNAPSHOT
+source_version=1.11.0-200-g835628b4c0ce
+maven_version=1.11.0

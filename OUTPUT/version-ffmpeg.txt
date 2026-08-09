@@ -1,0 +1,4 @@
+artifact_version=latest-SNAPSHOT
+version=8.0.git
+source_revision=f944afd04097
+ndk_version=29.0.14206865
