@@ -180,6 +180,12 @@ var cachedAndroidNdkRoot: File? = null
 fun resolveAndroidNdkRoot(): File {
     cachedAndroidNdkRoot?.let { return it }
 
+    val requestedVersion = providers.gradleProperty("androidNdkVersion")
+        .orElse(providers.environmentVariable("ANDROID_NDK_VERSION"))
+        .orNull
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+
     val explicitNdkPath = configuredPath(
         "androidNdkPath",
         "ANDROID_NDK_PATH",
@@ -193,9 +199,35 @@ fun resolveAndroidNdkRoot(): File {
                 "Configured Android NDK is incomplete or does not exist: ${explicitNdk.absolutePath}"
             )
         }
+        val explicitVersion = readNdkRevision(explicitNdk)
+        if (requestedVersion != null && explicitVersion != requestedVersion) {
+            throw GradleException(
+                "Repository-pinned Android NDK $requestedVersion does not match " +
+                    "$explicitVersion at ${explicitNdk.absolutePath}."
+            )
+        }
         return explicitNdk.canonicalFile.also { selected ->
             cachedAndroidNdkRoot = selected
-            logger.lifecycle("Using configured Android NDK ${readNdkRevision(selected)}: ${selected.absolutePath}")
+            logger.lifecycle("Using configured Android NDK $explicitVersion: ${selected.absolutePath}")
+        }
+    }
+
+    if (requestedVersion != null) {
+        val sdkRoot = resolveAndroidSdkRoot()
+            ?: throw GradleException(
+                "Android NDK $requestedVersion is pinned by the repository, but no Android SDK is configured. " +
+                    "Set ANDROID_HOME or ANDROID_SDK_ROOT."
+            )
+        val requestedRoot = sdkRoot.resolve("ndk/$requestedVersion")
+        if (!isUsableNdkRoot(requestedRoot)) {
+            throw GradleException(
+                "Repository-pinned Android NDK $requestedVersion is not installed or is incomplete: " +
+                    requestedRoot.absolutePath
+            )
+        }
+        return requestedRoot.canonicalFile.also { selected ->
+            cachedAndroidNdkRoot = selected
+            logger.lifecycle("Using repository-pinned Android NDK $requestedVersion: ${selected.absolutePath}")
         }
     }
 
@@ -203,39 +235,23 @@ fun resolveAndroidNdkRoot(): File {
         ?: throw GradleException(
             "Set ANDROID_HOME/ANDROID_SDK_ROOT, -PandroidNdkPath, or ANDROID_NDK_PATH."
         )
-    val requestedVersion = providers.gradleProperty("androidNdkVersion")
-        .orElse(providers.environmentVariable("ANDROID_NDK_VERSION"))
-        .orNull
-        ?.trim()
-        ?.takeIf(String::isNotEmpty)
+    val sideBySideRoot = sdkRoot.resolve("ndk")
+    val installations = sideBySideRoot.listFiles()
+        .orEmpty()
+        .asSequence()
+        .filter(::isUsableNdkRoot)
+        .map { root -> InstalledNdk(root, readNdkRevision(root)) }
+        .toList()
 
-    val selectedNdk = if (requestedVersion != null) {
-        val requestedRoot = sdkRoot.resolve("ndk/$requestedVersion")
-        if (!isUsableNdkRoot(requestedRoot)) {
-            throw GradleException(
-                "Android NDK $requestedVersion is not installed or is incomplete: ${requestedRoot.absolutePath}"
-            )
-        }
-        InstalledNdk(requestedRoot, readNdkRevision(requestedRoot))
-    } else {
-        val sideBySideRoot = sdkRoot.resolve("ndk")
-        val installations = sideBySideRoot.listFiles()
-            .orEmpty()
-            .asSequence()
-            .filter(::isUsableNdkRoot)
-            .map { root -> InstalledNdk(root, readNdkRevision(root)) }
-            .toList()
-
-        installations.maxWithOrNull { left, right ->
-            compareNdkRevisions(left.revision, right.revision)
-        } ?: sdkRoot.resolve("ndk-bundle")
-            .takeIf(::isUsableNdkRoot)
-            ?.let { root -> InstalledNdk(root, readNdkRevision(root)) }
-            ?: throw GradleException(
-                "No usable Android NDK installation was found under ${sideBySideRoot.absolutePath}. " +
-                    "Install an NDK with SDK Manager or set -PandroidNdkPath/ANDROID_NDK_PATH."
-            )
-    }
+    val selectedNdk = installations.maxWithOrNull { left, right ->
+        compareNdkRevisions(left.revision, right.revision)
+    } ?: sdkRoot.resolve("ndk-bundle")
+        .takeIf(::isUsableNdkRoot)
+        ?.let { root -> InstalledNdk(root, readNdkRevision(root)) }
+        ?: throw GradleException(
+            "No usable Android NDK installation was found under ${sideBySideRoot.absolutePath}. " +
+                "Install an NDK with SDK Manager or set -PandroidNdkPath/ANDROID_NDK_PATH."
+        )
 
     return selectedNdk.root.canonicalFile.also { selected ->
         cachedAndroidNdkRoot = selected

@@ -22,15 +22,14 @@ jobs:
           java-version: 17
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@4d9f0ba0025fe599b4ebab900eb7f3a1d93ef4c2 # v5.0.0
-      - name: Detect Android NDK
+      - name: Install Android NDK
         shell: bash
         run: |
-          ndk_root="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-}}"
-          if [[ -z "${ndk_root}" || ! -d "${ndk_root}" ]]; then
-            ndk_root="$(find "${ANDROID_SDK_ROOT}/ndk" -mindepth 1 -maxdepth 1 -type d -printf '%p\n' | sort -V | tail -n 1)"
-          fi
-          ndk_version="$(sed -n 's/^Pkg.Revision[[:space:]]*=[[:space:]]*//p' "${ndk_root}/source.properties" | head -n 1)"
+          ndk_version="$(sed -n 's/^androidNdkVersion=//p' gradle.properties | head -n 1)"
           test -n "${ndk_version}"
+          sdkmanager "ndk;${ndk_version}"
+          ndk_root="${ANDROID_SDK_ROOT}/ndk/${ndk_version}"
+          test -d "${ndk_root}"
           echo "ANDROID_NDK_ROOT=${ndk_root}" >> "${GITHUB_ENV}"
           echo "ANDROID_NDK_VERSION=${ndk_version}" >> "${GITHUB_ENV}"
           echo "Using Android NDK ${ndk_version} from ${ndk_root}"
