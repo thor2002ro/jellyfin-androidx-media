@@ -1,4 +1,5 @@
 import com.android.build.gradle.LibraryExtension
+import org.gradle.api.provider.Provider
 
 plugins {
     id("io.github.gradle-nexus.publish-plugin") version "2.0.0"
@@ -15,8 +16,11 @@ buildscript {
     }
 }
 
+val mediaGroup = "org.jellyfin.media3"
+val minimumAndroidSdk = 23
+
 allprojects {
-    group = "org.jellyfin.media3"
+    group = mediaGroup
     version = createVersion()
 
     repositories {
@@ -24,13 +28,17 @@ allprojects {
         google()
     }
 
-    // Set minSdk to 23 and force a specific NDK version
     afterEvaluate {
-        val android = extensions.findByType(LibraryExtension::class.java)
-        if (android != null) {
-            android.defaultConfig.minSdk = 23
-            android.ndkVersion = "26.1.10909125"
-        }
+        val android = extensions.findByType(LibraryExtension::class.java) ?: return@afterEvaluate
+
+        // aar-output.gradle.kts selects one usable NDK for the entire build.
+        // Reuse that value so every Android library is configured consistently.
+        @Suppress("UNCHECKED_CAST")
+        val selectedNdkVersion = rootProject.extensions.extraProperties
+            .get("jellyfinAndroidNdkVersionProvider") as Provider<String>
+
+        android.defaultConfig.minSdk = minimumAndroidSdk
+        android.ndkVersion = selectedNdkVersion.get()
     }
 }
 
@@ -54,3 +62,5 @@ tasks.wrapper {
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }
+
+apply(from = "gradle/aar-output.gradle.kts")
