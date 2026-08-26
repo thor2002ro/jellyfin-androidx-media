@@ -1,0 +1,185 @@
+diff --git a/libraries/container/src/main/java/androidx/media3/container/Mp4Box.java b/libraries/container/src/main/java/androidx/media3/container/Mp4Box.java
+index a114fa7d6f..498dfe514d 100644
+--- a/libraries/container/src/main/java/androidx/media3/container/Mp4Box.java
++++ b/libraries/container/src/main/java/androidx/media3/container/Mp4Box.java
+@@ -422,6 +422,9 @@ public abstract class Mp4Box {
+   @SuppressWarnings({"ConstantCaseForConstants", "IdentifierName"})
+   public static final int TYPE_chap = 0x63686170;
+
++  @SuppressWarnings({"ConstantCaseForConstants", "IdentifierName"})
++  public static final int TYPE_vdep = 0x76646570;
++
+   @SuppressWarnings("ConstantCaseForConstants")
+   public static final int TYPE_saut = 0x73617574;
+
+diff --git a/libraries/extractor/src/main/java/androidx/media3/extractor/mkv/MatroskaExtractor.java b/libraries/extractor/src/main/java/androidx/media3/extractor/mkv/MatroskaExtractor.java
+index 662768eb8f..f7b05d4dec 100644
+--- a/libraries/extractor/src/main/java/androidx/media3/extractor/mkv/MatroskaExtractor.java
++++ b/libraries/extractor/src/main/java/androidx/media3/extractor/mkv/MatroskaExtractor.java
+@@ -306,6 +306,7 @@ public class MatroskaExtractor implements Extractor {
+    * BlockAddID value for ITU T.35 metadata in a VP9 track. See also
+    * https://www.webmproject.org/docs/container/.
+    */
++  private static final int BLOCK_ADDITIONAL_ID_DOLBY_VISION = 1;
+   private static final int BLOCK_ADDITIONAL_ID_VP9_ITU_T_35 = 4;
+
+   /**
+@@ -1721,7 +1722,12 @@ public class MatroskaExtractor implements Extractor {
+   protected void handleBlockAdditionalData(
+       Track track, int blockAdditionalId, ExtractorInput input, int contentSize)
+       throws IOException {
+-    if (blockAdditionalId == BLOCK_ADDITIONAL_ID_VP9_ITU_T_35
++    if (blockAdditionalId == BLOCK_ADDITIONAL_ID_DOLBY_VISION
++        && CODEC_ID_H265.equals(track.codecId)
++        && track.dolbyVisionConfigBytes != null) {
++      supplementalData.reset(contentSize);
++      input.readFully(supplementalData.getData(), 0, contentSize);
++    } else if (blockAdditionalId == BLOCK_ADDITIONAL_ID_VP9_ITU_T_35
+         && CODEC_ID_VP9.equals(track.codecId)) {
+       supplementalData.reset(contentSize);
+       input.readFully(supplementalData.getData(), 0, contentSize);
+diff --git a/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/BoxParser.java b/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/BoxParser.java
+index c994e35a44..f5feaf8987 100644
+--- a/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/BoxParser.java
++++ b/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/BoxParser.java
+@@ -41,6 +41,7 @@ import androidx.media3.common.util.ParsableByteArray;
+ import androidx.media3.common.util.UnstableApi;
+ import androidx.media3.common.util.Util;
+ import androidx.media3.container.DolbyVisionConfig;
++import androidx.media3.container.MdtaMetadataEntry;
+ import androidx.media3.container.Mp4AlternateGroupData;
+ import androidx.media3.container.Mp4Box;
+ import androidx.media3.container.Mp4Box.LeafBox;
+@@ -80,6 +81,11 @@ public final class BoxParser {
+
+   private static final String TAG = "BoxParsers";
+
++  private static final String JELLYFIN_DOVI_TRACK_DEPENDENCY_KEY =
++      "com.jellyfin.androidtv.dovi.track-dependency";
++  private static final byte[] JELLYFIN_DOVI_TRACK_DEPENDENCY_MAGIC = {'D', 'V', 'D'};
++  private static final byte JELLYFIN_DOVI_TRACK_DEPENDENCY_VERSION = 1;
++
+   @SuppressWarnings("ConstantCaseForConstants")
+   private static final int TYPE_clcp = 0x636c6370;
+
+@@ -395,16 +401,42 @@ public final class BoxParser {
+     StsdData stsdData = parseStsd(stsd.data, tkhdData, mdhdData.language, drmInitData, isQuickTime);
+
+     int chapterTrackId = C.INDEX_UNSET;
+-    @Nullable Mp4Box.ContainerBox tref = trak.getContainerBoxOfType(Mp4Box.TYPE_tref);
+-    if (tref != null) {
++    int dependencyBaseTrackId = C.INDEX_UNSET;
++    @Nullable Mp4Box.LeafBox vdep = null;
++    int vdepCount = 0;
++    for (int trefIndex = 0; trefIndex < trak.containerChildren.size(); trefIndex++) {
++      Mp4Box.ContainerBox tref = trak.containerChildren.get(trefIndex);
++      if (tref.type != Mp4Box.TYPE_tref) {
++        continue;
++      }
+       @Nullable Mp4Box.LeafBox chap = tref.getLeafBoxOfType(Mp4Box.TYPE_chap);
+-      if (chap != null) {
++      if (chap != null && chapterTrackId == C.INDEX_UNSET) {
+         ParsableByteArray chapData = chap.data;
+         chapData.setPosition(Mp4Box.HEADER_SIZE);
+         if (chapData.bytesLeft() >= 4) {
+           chapterTrackId = chapData.readInt();
+         }
+       }
++      for (int i = 0; i < tref.leafChildren.size(); i++) {
++        Mp4Box.LeafBox child = tref.leafChildren.get(i);
++        if (child.type == Mp4Box.TYPE_vdep) {
++          vdep = child;
++          vdepCount++;
++        }
++      }
++    }
++    if (vdepCount > 1) {
++      throw ParserException.createForMalformedContainer(
++          "Multiple vdep boxes are ambiguous", /* cause= */ null);
++    }
++    if (vdep != null) {
++      ParsableByteArray vdepData = vdep.data;
++      vdepData.setPosition(Mp4Box.HEADER_SIZE);
++      if (vdepData.bytesLeft() != 4) {
++        throw ParserException.createForMalformedContainer(
++            "vdep must reference exactly one base track", /* cause= */ null);
++      }
++      dependencyBaseTrackId = vdepData.readInt();
+     }
+
+     @Nullable ImmutableLongArray editListDurations = null;
+@@ -422,7 +454,7 @@ public final class BoxParser {
+     if (stsdData.format == null) {
+       return null;
+     }
+-    Format format;
++    Format format = stsdData.format;
+     if (tkhdData.alternateGroup != 0) {
+       Mp4AlternateGroupData alternateGroupEntry =
+           new Mp4AlternateGroupData(tkhdData.alternateGroup);
+@@ -435,9 +467,27 @@ public final class BoxParser {
+                       ? stsdData.format.metadata.copyWithAppendedEntries(alternateGroupEntry)
+                       : new Metadata(alternateGroupEntry))
+               .build();
+-    } else {
+-      format = stsdData.format;
+     }
++    byte[] dependencyValue =
++        ByteBuffer.allocate(12)
++            .put(JELLYFIN_DOVI_TRACK_DEPENDENCY_MAGIC)
++            .put(JELLYFIN_DOVI_TRACK_DEPENDENCY_VERSION)
++            .putInt(tkhdData.id)
++            .putInt(dependencyBaseTrackId)
++            .array();
++    MdtaMetadataEntry dependencyEntry =
++        new MdtaMetadataEntry(
++            JELLYFIN_DOVI_TRACK_DEPENDENCY_KEY,
++            dependencyValue,
++            MdtaMetadataEntry.TYPE_INDICATOR_RESERVED);
++    format =
++        format
++            .buildUpon()
++            .setMetadata(
++                format.metadata != null
++                    ? format.metadata.copyWithAppendedEntries(dependencyEntry)
++                    : new Metadata(dependencyEntry))
++            .build();
+     boolean shouldBeExposed = !Objects.equals(format.sampleMimeType, MimeTypes.TEXT_UNKNOWN);
+     return new Track.Builder()
+         .setId(tkhdData.id)
+diff --git a/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/FragmentedMp4Extractor.java b/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/FragmentedMp4Extractor.java
+index e77b38c2a6..d549b42bf2 100644
+--- a/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/FragmentedMp4Extractor.java
++++ b/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/FragmentedMp4Extractor.java
+@@ -2034,7 +2034,8 @@ public class FragmentedMp4Extractor implements Extractor {
+         || atom == Mp4Box.TYPE_emsg
+         || atom == Mp4Box.TYPE_udta
+         || atom == Mp4Box.TYPE_keys
+-        || atom == Mp4Box.TYPE_ilst;
++        || atom == Mp4Box.TYPE_ilst
++        || atom == Mp4Box.TYPE_vdep;
+   }
+
+   /** Returns whether the extractor should decode a container atom with type {@code atom}. */
+@@ -2048,6 +2049,7 @@ public class FragmentedMp4Extractor implements Extractor {
+         || atom == Mp4Box.TYPE_traf
+         || atom == Mp4Box.TYPE_mvex
+         || atom == Mp4Box.TYPE_edts
++        || atom == Mp4Box.TYPE_tref
+         || atom == Mp4Box.TYPE_meta;
+   }
+
+diff --git a/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/Mp4Extractor.java b/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/Mp4Extractor.java
+index f5598391c9..59427aa11f 100644
+--- a/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/Mp4Extractor.java
++++ b/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/Mp4Extractor.java
+@@ -1396,7 +1396,8 @@ public final class Mp4Extractor implements Extractor {
+         || atom == Mp4Box.TYPE_udta
+         || atom == Mp4Box.TYPE_keys
+         || atom == Mp4Box.TYPE_ilst
+-        || atom == Mp4Box.TYPE_chap;
++        || atom == Mp4Box.TYPE_chap
++        || atom == Mp4Box.TYPE_vdep;
+   }
+
+   /** Returns whether the extractor should decode a container atom with type {@code atom}. */
