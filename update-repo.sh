@@ -66,8 +66,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 aar_gradle_script="${repo_root}/gradle/aar-output.gradle.kts"
 media_root="${repo_root}/media"
 ffmpeg_root="${repo_root}/ffmpeg"
-media_version="${MEDIA_VERSION:-${1:-main}}"
-media_merge_version="${MEDIA_MERGE_VERSION:-${2:-1.11.0}}"
+media_version="${MEDIA_VERSION:-${1:-release}}"
+media_merge_version="${MEDIA_MERGE_VERSION:-${2:-}}"
 ffmpeg_ref="${FFMPEG_REF:-${3:-master}}"
 ffmpeg_url="${FFMPEG_URL:-https://github.com/FFmpeg/FFmpeg.git}"
 ffmpeg_static_mode="${FFMPEG_STATIC_MODE:-source}"
@@ -197,11 +197,11 @@ resolve_media_ref() {
     local candidate
 
     if [[ -z "${version}" ]]; then
-        echo "origin/main"
+        echo "origin/release"
         return
     fi
 
-    for candidate in "${version}" "origin/${version}" "refs/tags/${version}"; do
+    for candidate in "origin/${version}" "${version}" "refs/tags/${version}"; do
         if git_in "${media_root}" rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then
             echo "${candidate}"
             return

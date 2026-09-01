@@ -4,3 +4,6 @@
 *.sh text eol=lf
 *.patch text eol=lf
 gradlew text eol=lf
+OUTPUT/maven/**/*.module text eol=lf
+OUTPUT/maven/**/*.pom text eol=lf
+OUTPUT/maven/**/*.xml text eol=lf

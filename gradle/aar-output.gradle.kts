@@ -71,6 +71,9 @@ val ffmpegAar = Media3Aar(
     "media3-ffmpeg-decoder-release.aar",
 )
 val allAars = media3Aars + ffmpegAar
+val publishedMedia3ArtifactIds = allAars.associateWith { aar ->
+    "media3-${aar.libraryDirectory.replace('_', '-')}"
+}
 val expectedAbis = listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
 val configuredFfmpegArchives = providers.gradleProperty("ffmpegArchives")
     .orElse(providers.environmentVariable("FFMPEG_ARCHIVES"))
@@ -574,6 +577,38 @@ fun resolveGitVersion(directory: File): String {
     return output
 }
 
+fun resolveGitRevision(directory: File): String {
+    if (!directory.isDirectory) {
+        throw GradleException("Source directory does not exist: ${directory.absolutePath}")
+    }
+
+    val command = listOf(
+        "git",
+        "-c",
+        "safe.directory=*",
+        "-C",
+        directory.absolutePath,
+        "rev-parse",
+        "--short=12",
+        "HEAD",
+    )
+    val process = try {
+        ProcessBuilder(command)
+            .redirectErrorStream(true)
+            .start()
+    } catch (error: Exception) {
+        throw GradleException("Could not execute Git for ${directory.absolutePath}.", error)
+    }
+    val output = process.inputStream.bufferedReader().use { reader -> reader.readText() }.trim()
+    val exitCode = process.waitFor()
+    if (exitCode != 0 || !Regex("""[0-9a-f]{12}""").matches(output)) {
+        throw GradleException(
+            "Could not determine the source revision for ${directory.absolutePath}: $output"
+        )
+    }
+    return output
+}
+
 fun writeTextIfChanged(file: File, contents: String) {
     file.parentFile.mkdirs()
     if (!file.isFile || file.readText() != contents) {
@@ -618,7 +653,8 @@ val artifactVersion = providers.provider {
         )
 }
 val mediaSourceVersion = providers.provider { resolveGitVersion(mediaRoot) }
-val media3MavenVersion = providers.provider {
+val mediaSourceRevision = providers.provider { resolveGitRevision(mediaRoot) }
+val media3ReleaseVersion = providers.provider {
     val versionCatalog = mediaRoot.resolve("gradle/libs.versions.toml")
     requireNotNull(
         Regex("""(?m)^\s*releaseVersion\s*=\s*"([^"]+)"\s*$""")
@@ -1103,7 +1139,7 @@ val assemblePatchedMedia3Aars by tasks.registering(Exec::class) {
     group = "build"
     description = "Publishes patched Media3 modules to a local Maven repository and assembles " +
         "the FFmpeg decoder with the Media3 Gradle wrapper."
-    dependsOn(prepareNativeDependencies)
+    dependsOn(cleanAarOutput, prepareNativeDependencies)
     mustRunAfter(
         cleanAarOutput,
         prepareFfmpegSourceDependencies,
@@ -1113,9 +1149,9 @@ val assemblePatchedMedia3Aars by tasks.registering(Exec::class) {
     workingDir(mediaRoot)
 
     val mediaGradleArguments =
-        media3Aars.map { "${it.projectPath}:publishReleasePublicationToMavenRepository" } +
-            "${ffmpegAar.projectPath}:assembleRelease" +
-            "-PmavenRepo=${media3MavenRoot.absolutePath}"
+        allAars.map { "${it.projectPath}:publishReleasePublicationToMavenRepository" } +
+            "-PmavenRepo=${media3MavenRoot.absolutePath}" +
+            "-Pmedia3MavenVersion=${media3MavenVersion.get()}"
     if (isWindows) {
         commandLine(
             "cmd.exe",
@@ -1172,6 +1208,8 @@ val buildMedia3Aars by tasks.registering(Copy::class) {
 
     inputs.property("artifactVersion", artifactVersion)
     inputs.property("mediaSourceVersion", mediaSourceVersion)
+    inputs.property("mediaSourceRevision", mediaSourceRevision)
+    inputs.property("media3MavenVersion", media3MavenVersion)
     inputs.property("ffmpegVersion", ffmpegVersion)
     inputs.property("ffmpegSourceRevision", ffmpegSourceRevision)
     inputs.property("androidNdkVersion", selectedAndroidNdkVersion)
@@ -1235,4 +1273,62 @@ val buildMedia3Aars by tasks.registering(Copy::class) {
         logger.lifecycle("Wrote version files:")
         allVersionFiles.forEach { versionFile -> logger.lifecycle("  $versionFile") }
     }
+}
+
+val verifyPublishedMedia3Repository by tasks.registering {
+    group = "verification"
+    description = "Verifies the fork-specific Media3 Maven repository and its checksums."
+
+    inputs.dir(media3MavenRoot)
+    inputs.file(media3VersionFile)
+
+    doLast {
+        val version = media3MavenVersion.get()
+        require(Regex("""^\d+\.\d+\.\d+-thor\.[0-9a-f]{12}$""").matches(version)) {
+            "Patched Media3 must use a fork-specific Maven version, not '$version'."
+        }
+
+        publishedMedia3ArtifactIds.values.forEach { artifactId ->
+            val artifactDirectory = media3MavenRoot.resolve("androidx/media3/$artifactId/$version")
+            require(artifactDirectory.isDirectory) {
+                "Missing published Media3 module: $artifactDirectory"
+            }
+            require(artifactDirectory.resolve("$artifactId-$version.pom").isFile) {
+                "Missing POM for $artifactId:$version"
+            }
+            require(artifactDirectory.resolve("$artifactId-$version.module").isFile) {
+                "Missing Gradle module metadata for $artifactId:$version"
+            }
+            require(artifactDirectory.resolve("$artifactId-$version.aar").isFile) {
+                "Missing AAR for $artifactId:$version"
+            }
+        }
+
+        val digestAlgorithms = mapOf(
+            "md5" to "MD5",
+            "sha1" to "SHA-1",
+            "sha256" to "SHA-256",
+            "sha512" to "SHA-512",
+        )
+        fileTree(media3MavenRoot).matching {
+            digestAlgorithms.keys.forEach { extension -> include("**/*.$extension") }
+        }.files.forEach { checksumFile ->
+            val extension = checksumFile.extension
+            val target = File(checksumFile.absolutePath.removeSuffix(".$extension"))
+            require(target.isFile) { "Checksum target is missing: $target" }
+            val digest = java.security.MessageDigest.getInstance(digestAlgorithms.getValue(extension))
+            val actual = digest.digest(target.readBytes()).joinToString("") { byte -> "%02x".format(byte) }
+            val expected = checksumFile.readText().trim()
+            require(actual == expected) {
+                "Checksum mismatch for $target: expected $expected, got $actual"
+            }
+        }
+    }
+}
+
+buildMedia3Aars.configure {
+    finalizedBy(verifyPublishedMedia3Repository)
+}
+val media3MavenVersion = media3ReleaseVersion.zip(mediaSourceRevision) { releaseVersion, revision ->
+    "$releaseVersion-thor.$revision"
 }
