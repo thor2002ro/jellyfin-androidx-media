@@ -1,0 +1,25 @@
+diff --git a/build-logic/src/main/kotlin/media3.publish.gradle.kts b/build-logic/src/main/kotlin/media3.publish.gradle.kts
+index 20b9a356dc..8713c24a1d 100644
+--- a/build-logic/src/main/kotlin/media3.publish.gradle.kts
++++ b/build-logic/src/main/kotlin/media3.publish.gradle.kts
+@@ -22,5 +22,8 @@ plugins { id("maven-publish") }
+-
++
+ val libs = project.extensions.getByType<VersionCatalogsExtension>().named("libs")
++val publicationVersion = providers.gradleProperty("media3MavenVersion").orElse(
++  libs.findVersion("releaseVersion").get().requiredVersion
++)
+-
++
+ plugins.withId("com.android.library") {
+   configure<LibraryExtension> { publishing { singleVariant("release") { withSourcesJar() } } }
+@@ -43,7 +46,7 @@ afterEvaluate {
+           from(components["release"])
+           groupId = "androidx.media3"
+           artifactId = Media3Modules.EXTERNAL_MODULES[project.name]?.artifactId ?: ""
+-          version = libs.findVersion("releaseVersion").get().requiredVersion
++          version = publicationVersion.get()
+-
++
+          pom {
+             name.set(Media3Modules.EXTERNAL_MODULES[project.name]?.name ?: "")
