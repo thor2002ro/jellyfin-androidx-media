@@ -150,6 +150,14 @@ ffmpeg_link="${module_path}/jni/ffmpeg"
 readonly ffmpeg_link
 require_directory "${ffmpeg_link}" "Media3 FFmpeg source link is missing in WSL"
 
+# FFmpeg builds all ABIs in the same source tree. Remove only generated build
+# state before starting so an interrupted/repeated build cannot retain archive
+# members from a previously compiled ABI.
+if [[ -f "${ffmpeg_link}/Makefile" ]]; then
+    make -C "${ffmpeg_link}" distclean >/dev/null
+fi
+rm -rf "${ffmpeg_link}/android-libs"
+
 mkdir -p "${ffmpeg_link}/ffbuild-tmp"
 export TMPDIR="${ffmpeg_link}/ffbuild-tmp"
 
@@ -171,6 +179,10 @@ rm -rf "${compiler_test_dir}"
 normalized_build_script="${wrap_root}/build_ffmpeg.sh"
 readonly normalized_build_script
 tr -d '\r' <"${build_script}" >"${normalized_build_script}"
+
+# Each make job launches a Windows compiler through WSL. Keeping this bounded
+# avoids exhausting the WSL transport on high-core-count hosts.
+export JOBS="${FFMPEG_JOBS:-4}"
 
 bash "${normalized_build_script}" \
     "${module_path}" \

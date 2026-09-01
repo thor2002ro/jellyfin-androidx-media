@@ -1,0 +1,16 @@
+diff --git a/libraries/decoder_ffmpeg/build.gradle.kts b/libraries/decoder_ffmpeg/build.gradle.kts
+index 8bc7c95329..f6398f6534 100644
+--- a/libraries/decoder_ffmpeg/build.gradle.kts
++++ b/libraries/decoder_ffmpeg/build.gradle.kts
+@@ -12,6 +12,9 @@
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
+-plugins { id("media3.android-library") }
++plugins {
++  id("media3.android-library")
++  id("media3.publish")
++}
+-
++
+ android {
+   namespace = "androidx.media3.decoder.ffmpeg"
