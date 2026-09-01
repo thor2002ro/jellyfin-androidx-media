@@ -1,4 +1,8 @@
 artifact_version=latest-SNAPSHOT
-version=8.0.git
-source_revision=f944afd04097
+mode=shared
+version=8.1.2
+provider_version=8.1.2-thor.1a748fe2cd43
+provider=io.github.abdallahmehiz:mpv-ffmpeg-android:8.1.2-thor.1a748fe2cd43
+source_revision=1a748fe2cd43e3ead22fafb1b5b7d77f153898a8
+sha256=b89db81c961cb0002c0edf0dff93a83b95d5f4f0aa7b5d0f7af51dca0e8abe79
 ndk_version=29.0.14206865

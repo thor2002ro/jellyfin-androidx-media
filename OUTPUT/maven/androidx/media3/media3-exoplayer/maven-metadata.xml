@@ -3,11 +3,11 @@
   <groupId>androidx.media3</groupId>
   <artifactId>media3-exoplayer</artifactId>
   <versioning>
-    <latest>1.11.0</latest>
-    <release>1.11.0</release>
+    <latest>1.11.0-thor.284a04569fbd-shared.1a748fe2cd43</latest>
+    <release>1.11.0-thor.284a04569fbd-shared.1a748fe2cd43</release>
     <versions>
-      <version>1.11.0</version>
+      <version>1.11.0-thor.284a04569fbd-shared.1a748fe2cd43</version>
     </versions>
-    <lastUpdated>20260808203523</lastUpdated>
+    <lastUpdated>20260901080808</lastUpdated>
   </versioning>
 </metadata>
