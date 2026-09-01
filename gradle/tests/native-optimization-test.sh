@@ -94,6 +94,10 @@ grep -Fq 'selectedAndroidNdkVersion.get(),' "$gradle_build" ||
     fail "Media3 Gradle build does not pass the selected NDK revision to WSL"
 grep -Fq 'libyuv.so' "$gradle_build" ||
     fail "Media3 Gradle orchestration does not expect shared libyuv"
+grep -Fq 'android.packaging.jniLibs.excludes +=' "$decoder_gradle" ||
+    fail "Media3 shared mode does not exclude provider FFmpeg libraries from its AAR"
+grep -Fq '"**/libavcodec.so"' "$decoder_gradle" ||
+    fail "Media3 decoder AAR does not exclude the provider libavcodec copy"
 grep -Fq '"-DCMAKE_C_FLAGS_RELEASE=-O3 -flto=thin"' "$gradle_build" ||
     fail "Media3 Gradle libyuv C compilation does not select O3 and thin LTO"
 grep -Fq '"-DCMAKE_CXX_FLAGS_RELEASE=-O3 -flto=thin"' "$gradle_build" ||
