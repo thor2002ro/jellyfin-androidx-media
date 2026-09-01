@@ -1,0 +1,123 @@
+diff --git a/libraries/decoder_ffmpeg/build.gradle.kts b/libraries/decoder_ffmpeg/build.gradle.kts
+index 8f30ee946f..3db501c638 100644
+--- a/libraries/decoder_ffmpeg/build.gradle.kts
++++ b/libraries/decoder_ffmpeg/build.gradle.kts
+@@ -18,6 +18,7 @@ plugins {
+ 
+ android {
+   namespace = "androidx.media3.decoder.ffmpeg"
++  providers.gradleProperty("jellyfinAndroidNdkVersion").orNull?.let { ndkVersion = it }
+ 
+   sourceSets { getByName("androidTest").assets.directories.add("../test_data/src/test/assets") }
+ }
+diff --git a/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt b/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
+index 9c2d53540d..31a1489a8b 100644
+--- a/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
++++ b/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
+@@ -58,6 +58,16 @@ add_library(ffmpegJNI
+             SHARED
+             ffmpeg_jni.cc)
+ 
++if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
++    target_compile_options(ffmpegJNI PRIVATE -O3 -flto=thin)
++    target_link_options(ffmpegJNI PRIVATE -flto=thin)
++    if(ANDROID_ABI STREQUAL "armeabi-v7a")
++        target_compile_options(ffmpegJNI PRIVATE -mfpu=neon)
++        target_compile_options(ffmpegJNI PRIVATE -mthumb)
++        target_link_options(ffmpegJNI PRIVATE -Wl,--no-fatal-warnings)
++    endif()
++endif()
++
+ target_link_libraries(ffmpegJNI
+                       PRIVATE android
+                       PRIVATE swresample
+diff --git a/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh b/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
+index d3af1e3254..945acd8774 100755
+--- a/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
++++ b/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
+@@ -44,6 +44,9 @@ COMMON_OPTIONS="
+     --extra-ldexeflags=-pie
+     --disable-v4l2-m2m
+     --disable-vulkan
++    --optflags=-O3
++    --enable-lto
++    --host-cc=clang
+     "
+ TOOLCHAIN_PREFIX="${NDK_PATH}/toolchains/llvm/prebuilt/${HOST_PLATFORM}/bin"
+ if [[ ! -d "${TOOLCHAIN_PREFIX}" ]]
+@@ -77,13 +80,17 @@ cd "${FFMPEG_MODULE_PATH}/jni/ffmpeg"
+     --libdir=android-libs/armeabi-v7a \
+     --arch=arm \
+     --cpu=armv7-a \
++    --cc="${TOOLCHAIN_PREFIX}/armv7a-linux-androideabi${ANDROID_ABI}-clang" \
++    --cxx="${TOOLCHAIN_PREFIX}/armv7a-linux-androideabi${ANDROID_ABI}-clang++" \
+     --cross-prefix="${TOOLCHAIN_PREFIX}/armv7a-linux-androideabi${ANDROID_ABI}-" \
+     --nm="${TOOLCHAIN_PREFIX}/llvm-nm" \
+     --ar="${TOOLCHAIN_PREFIX}/llvm-ar" \
+     --ranlib="${TOOLCHAIN_PREFIX}/llvm-ranlib" \
+     --strip="${TOOLCHAIN_PREFIX}/llvm-strip" \
+-    --extra-cflags="-march=armv7-a -mfloat-abi=softfp" \
++    --extra-cflags="-march=armv7-a -mfloat-abi=softfp -mfpu=neon" \
+     --extra-ldflags="-Wl,--fix-cortex-a8" \
++    --enable-neon \
++    --enable-thumb \
+     ${COMMON_OPTIONS}
+ make -j$JOBS
+ make install-libs
+@@ -93,11 +100,14 @@ mkdir -p "${TMPDIR:-/tmp}"
+     --libdir=android-libs/arm64-v8a \
+     --arch=aarch64 \
+     --cpu=armv8-a \
++    --cc="${TOOLCHAIN_PREFIX}/aarch64-linux-android${ANDROID_ABI_64BIT}-clang" \
++    --cxx="${TOOLCHAIN_PREFIX}/aarch64-linux-android${ANDROID_ABI_64BIT}-clang++" \
+     --cross-prefix="${TOOLCHAIN_PREFIX}/aarch64-linux-android${ANDROID_ABI_64BIT}-" \
+     --nm="${TOOLCHAIN_PREFIX}/llvm-nm" \
+     --ar="${TOOLCHAIN_PREFIX}/llvm-ar" \
+     --ranlib="${TOOLCHAIN_PREFIX}/llvm-ranlib" \
+     --strip="${TOOLCHAIN_PREFIX}/llvm-strip" \
++    --enable-neon \
+     ${COMMON_OPTIONS}
+ make -j$JOBS
+ make install-libs
+@@ -107,6 +117,8 @@ mkdir -p "${TMPDIR:-/tmp}"
+     --libdir=android-libs/x86 \
+     --arch=x86 \
+     --cpu=i686 \
++    --cc="${TOOLCHAIN_PREFIX}/i686-linux-android${ANDROID_ABI}-clang" \
++    --cxx="${TOOLCHAIN_PREFIX}/i686-linux-android${ANDROID_ABI}-clang++" \
+     --cross-prefix="${TOOLCHAIN_PREFIX}/i686-linux-android${ANDROID_ABI}-" \
+     --nm="${TOOLCHAIN_PREFIX}/llvm-nm" \
+     --ar="${TOOLCHAIN_PREFIX}/llvm-ar" \
+@@ -122,6 +134,8 @@ mkdir -p "${TMPDIR:-/tmp}"
+     --libdir=android-libs/x86_64 \
+     --arch=x86_64 \
+     --cpu=x86-64 \
++    --cc="${TOOLCHAIN_PREFIX}/x86_64-linux-android${ANDROID_ABI_64BIT}-clang" \
++    --cxx="${TOOLCHAIN_PREFIX}/x86_64-linux-android${ANDROID_ABI_64BIT}-clang++" \
+     --cross-prefix="${TOOLCHAIN_PREFIX}/x86_64-linux-android${ANDROID_ABI_64BIT}-" \
+     --nm="${TOOLCHAIN_PREFIX}/llvm-nm" \
+     --ar="${TOOLCHAIN_PREFIX}/llvm-ar" \
+diff --git a/libraries/decoder_ffmpeg/src/main/jni/build_yuv.sh b/libraries/decoder_ffmpeg/src/main/jni/build_yuv.sh
+index 9189719c47..ef236c390a 100644
+--- a/libraries/decoder_ffmpeg/src/main/jni/build_yuv.sh
++++ b/libraries/decoder_ffmpeg/src/main/jni/build_yuv.sh
+@@ -12,5 +12,9 @@ cd "${FFMPEG_MODULE_PATH}/jni/libyuv"
+ for abi in "${ABIS[@]}"; do
+   build_dir="build-${abi}"
++  release_flags="-O3 -flto=thin"
++  if [[ "${abi}" == "armeabi-v7a" ]]; then
++    release_flags+=" -mthumb"
++  fi
+   rm -rf "${build_dir}"
+   cmake -S . -B "${build_dir}" \
+     -G "Unix Makefiles" \
+@@ -18,6 +22,9 @@ for abi in "${ABIS[@]}"; do
+     -DANDROID_ABI="${abi}" \
+     -DANDROID_PLATFORM="${ANDROID_API}" \
+     -DCMAKE_BUILD_TYPE=Release \
++    "-DCMAKE_C_FLAGS_RELEASE=${release_flags}" \
++    "-DCMAKE_CXX_FLAGS_RELEASE=${release_flags}" \
++    -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON \
+     -DBUILD_SHARED_LIBS=OFF \
+     -DBUILD_STATIC_LIBS=ON
+ 
