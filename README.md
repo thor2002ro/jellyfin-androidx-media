@@ -15,8 +15,9 @@ treated as an official Jellyfin or AndroidX Media release.
 - Adds Microsoft GSM audio mapping and keeps the FFmpeg build limited to the
   codecs advertised by the decoder.
 - Enables FFmpeg frame-threaded video decoding.
-- Builds the FFmpeg submodule as static libraries for `armeabi-v7a`, `arm64-v8a`, `x86`,
-  and `x86_64`.
+- Builds the FFmpeg submodule as static libraries by default, or consumes the
+  MPV FFmpeg provider AAR as shared libraries when `jellyfinSharedFfmpegAar` is
+  supplied, for `armeabi-v7a`, `arm64-v8a`, `x86`, and `x86_64`.
 
 ### Native surface rendering
 
@@ -62,7 +63,8 @@ Media3 ref when a build must use something other than `origin/main`.
 - Android SDK with `ANDROID_HOME`, `ANDROID_SDK_ROOT`, or `sdk.dir` in `local.properties`.
 - At least one Android NDK installed in the SDK. The newest installed side-by-side NDK is selected automatically.
 - CMake and Ninja available on `PATH` or installed as an Android SDK CMake package.
-- Network access to fetch AndroidX Media refs and the current libyuv `main` branch, which is built as a static native dependency.
+- Network access to fetch AndroidX Media refs and the current libyuv `main`
+  branch, which is built as a separate shared native dependency.
 
 Clone the repository with its Media3 and FFmpeg submodules:
 
@@ -102,6 +104,13 @@ To select another Media3 ref:
 
 ```bat
 update-repo.bat <Media3-ref>
+```
+
+To reuse the MPV FFmpeg provider, pass its AAR as a path relative to this
+repository:
+
+```bat
+gradlew.bat --parallel buildMedia3Aars "-PjellyfinSharedFfmpegAar=..\mpv-android-lib\OUTPUT\maven\io\github\abdallahmehiz\mpv-ffmpeg-android\<version>\mpv-ffmpeg-android-<version>.aar"
 ```
 
 The default output is:

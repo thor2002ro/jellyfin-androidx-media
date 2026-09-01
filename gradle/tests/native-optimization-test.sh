@@ -29,11 +29,6 @@ done
 chmod +x "$test_root/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh"
 
 [[ -f "$optimization_patch" ]] || fail "native optimization patch is missing"
-git -C "$test_root" init -q
-if git -C "$test_root" apply --reverse --check "$optimization_patch" 2>/dev/null; then
-    git -C "$test_root" apply --reverse "$optimization_patch"
-fi
-git -C "$test_root" apply "$optimization_patch"
 
 decoder_gradle="$test_root/${paths[0]}"
 jni_cmake="$test_root/${paths[1]}"
@@ -62,6 +57,19 @@ grep -Fq -- '-DCMAKE_CXX_FLAGS_RELEASE=${release_flags}' "$yuv_script" ||
     fail "Media3 libyuv C++ compilation does not consume the release flags"
 grep -Fq -- '-DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON' "$yuv_script" ||
     fail "Media3 libyuv release linking does not enable LTO"
+grep -Fq -- '-DBUILD_SHARED_LIBS=ON' "$yuv_script" ||
+    fail "Media3 libyuv is not built as a shared library"
+grep -Fq -- '-DBUILD_STATIC_LIBS=OFF' "$yuv_script" ||
+    fail "Media3 libyuv still enables static library output"
+grep -Fq 'libyuv.so' "$yuv_script" ||
+    fail "Media3 libyuv build does not stage libyuv.so"
+
+grep -Fq 'add_library(' "$jni_cmake" &&
+    grep -Fq '        yuv' "$jni_cmake" &&
+    grep -Fq '        SHARED' "$jni_cmake" ||
+    fail "Media3 FFmpeg JNI does not import libyuv as shared"
+grep -Fq '${yuv_binaries}/libyuv.so' "$jni_cmake" ||
+    fail "Media3 FFmpeg JNI does not link the staged libyuv.so"
 
 grep -Fq 'target_compile_options(ffmpegJNI PRIVATE -O3 -flto=thin)' "$jni_cmake" ||
     fail "Media3 FFmpeg JNI compilation does not select O3 and thin LTO"
@@ -84,6 +92,18 @@ grep -Fq '"${linux_toolchain_bin}/clang" -x c -flto -fuse-ld=lld' "$wsl_wrapper"
     fail "Media3 WSL build wrapper does not smoke-test NDK Clang for host LTO"
 grep -Fq 'selectedAndroidNdkVersion.get(),' "$gradle_build" ||
     fail "Media3 Gradle build does not pass the selected NDK revision to WSL"
+grep -Fq 'libyuv.so' "$gradle_build" ||
+    fail "Media3 Gradle orchestration does not expect shared libyuv"
+grep -Fq '"-DCMAKE_C_FLAGS_RELEASE=-O3 -flto=thin"' "$gradle_build" ||
+    fail "Media3 Gradle libyuv C compilation does not select O3 and thin LTO"
+grep -Fq '"-DCMAKE_CXX_FLAGS_RELEASE=-O3 -flto=thin"' "$gradle_build" ||
+    fail "Media3 Gradle libyuv C++ compilation does not select O3 and thin LTO"
+grep -Fq '"-DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON"' "$gradle_build" ||
+    fail "Media3 Gradle libyuv release linking does not enable LTO"
+grep -Fq 'inputs.property("releaseFlags", "-O3 -flto=thin")' "$gradle_build" ||
+    fail "Media3 Gradle libyuv release flags are not tracked as configuration inputs"
+grep -Fq '"--target", "yuv_shared"' "$gradle_build" ||
+    fail "Media3 Gradle orchestration does not build the shared libyuv target"
 grep -Fq '"-PjellyfinAndroidNdkVersion=${selectedAndroidNdkVersion.get()}"' "$gradle_build" ||
     fail "Media3 nested Gradle build does not receive the selected NDK revision"
 if grep -Eq '^for command_name in .* clang' "$wsl_wrapper"; then

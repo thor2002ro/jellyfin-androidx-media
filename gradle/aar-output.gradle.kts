@@ -5,6 +5,9 @@ import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.Sync
 import java.io.File
+import java.security.MessageDigest
+import java.util.Properties
+import java.util.zip.ZipFile
 
 // Build model and directory layout
 
@@ -82,6 +85,7 @@ val configuredFfmpegDecoders = providers.gradleProperty("ffmpegDecoders")
 val configuredFfmpegStaticMode = providers.gradleProperty("ffmpegStaticMode")
     .orElse(providers.environmentVariable("FFMPEG_STATIC_MODE"))
     .orElse("source")
+val configuredSharedFfmpegAar = providers.gradleProperty("jellyfinSharedFfmpegAar")
 val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
 val cmakeVersion = "3.31.1"
 val androidApi = providers.gradleProperty("androidApi")
@@ -577,6 +581,153 @@ fun resolveGitVersion(directory: File): String {
     return output
 }
 
+data class SharedFfmpegProvider(
+    val aar: File,
+    val mavenRoot: File,
+    val group: String,
+    val artifact: String,
+    val version: String,
+    val ffmpegVersion: String,
+    val commit: String,
+    val sha256: String,
+)
+
+fun sha256(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().use { input ->
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+        }
+    }
+    return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+}
+
+fun readSharedFfmpegProvider(): SharedFfmpegProvider? {
+    val configured = configuredSharedFfmpegAar.orNull?.trim()?.takeIf(String::isNotEmpty)
+        ?: return null
+    val configuredFile = File(configured)
+    if (configuredFile.isAbsolute) {
+        throw GradleException(
+            "jellyfinSharedFfmpegAar must be relative to ${rootProject.projectDir.absolutePath}: $configured"
+        )
+    }
+    val aar = rootProject.projectDir.resolve(configured).canonicalFile
+    if (!aar.isFile) {
+        throw GradleException("Shared FFmpeg provider AAR does not exist: ${aar.absolutePath}")
+    }
+
+    val requiredLibraries = listOf(
+        "libavcodec.so", "libavdevice.so", "libavfilter.so", "libavformat.so",
+        "libavutil.so", "libswresample.so", "libswscale.so",
+    )
+    val metadataPath = "META-INF/mpv-ffmpeg-android.properties"
+    val properties = Properties()
+    ZipFile(aar).use { zip ->
+        val metadataEntry = zip.getEntry(metadataPath)
+            ?: throw GradleException("Shared FFmpeg provider metadata is missing: $metadataPath")
+        zip.getInputStream(metadataEntry).use(properties::load)
+        expectedAbis.forEach { abi ->
+            listOf(
+                "headers/$abi/libavcodec/version_major.h",
+                "headers/$abi/libavutil/avconfig.h",
+            ).forEach { path ->
+                if (zip.getEntry(path) == null) {
+                    throw GradleException("Shared FFmpeg provider entry is missing: $path")
+                }
+            }
+            requiredLibraries.forEach { library ->
+                val path = "jni/$abi/$library"
+                if (zip.getEntry(path) == null) {
+                    throw GradleException("Shared FFmpeg provider entry is missing: $path")
+                }
+            }
+        }
+        if (zip.getEntry("prefab/prefab.json") == null) {
+            throw GradleException("Shared FFmpeg provider entry is missing: prefab/prefab.json")
+        }
+        requiredLibraries.forEach { library ->
+            val module = library.removePrefix("lib").removeSuffix(".so")
+            val path = "prefab/modules/$module/module.json"
+            if (zip.getEntry(path) == null) {
+                throw GradleException("Shared FFmpeg provider entry is missing: $path")
+            }
+        }
+    }
+
+    fun requireProperty(name: String, expected: String? = null): String {
+        val value = properties.getProperty(name)?.trim().orEmpty()
+        if (value.isEmpty()) {
+            throw GradleException("Shared FFmpeg provider metadata property is missing: $name")
+        }
+        if (expected != null && value != expected) {
+            throw GradleException(
+                "Shared FFmpeg provider metadata $name must be '$expected', not '$value'."
+            )
+        }
+        return value
+    }
+
+    val group = requireProperty("group", "io.github.abdallahmehiz")
+    val artifact = requireProperty("artifact", "mpv-ffmpeg-android")
+    val version = requireProperty("version")
+    val ffmpegVersion = requireProperty("ffmpeg_version")
+    val commit = requireProperty("ffmpeg_commit")
+    require(Regex("""^[0-9]+\.[0-9]+(?:\.[0-9]+)?$""").matches(ffmpegVersion)) {
+        "Shared FFmpeg provider FFmpeg version is invalid: $ffmpegVersion"
+    }
+    require(Regex("""^[0-9a-f]{40}$""").matches(commit)) {
+        "Shared FFmpeg provider commit is invalid: $commit"
+    }
+    require(version == "$ffmpegVersion-thor.${commit.take(12)}") {
+        "Shared FFmpeg provider version $version does not match FFmpeg $ffmpegVersion at $commit"
+    }
+    requireProperty("ndk_version", "29.0.14206865")
+    requireProperty("abis", expectedAbis.joinToString(","))
+    requireProperty("optimization", "O3,thin-lto,armv7-neon,armv7-thumb,arm64-neon")
+    val decoders = requireProperty("decoders").split(',').map(String::trim).toSet()
+    val missingDecoders = defaultFfmpegDecoders.filterNot(decoders::contains)
+    if (missingDecoders.isNotEmpty()) {
+        throw GradleException(
+            "Shared FFmpeg provider is missing required decoders: ${missingDecoders.joinToString(", ")}"
+        )
+    }
+    require(aar.name == "$artifact-$version.aar") {
+        "Shared FFmpeg provider AAR name does not match its metadata: ${aar.name}"
+    }
+    val versionDirectory = aar.parentFile
+    require(versionDirectory.name == version) {
+        "Shared FFmpeg provider AAR is not in its Maven version directory: ${aar.absolutePath}"
+    }
+    val artifactDirectory = versionDirectory.parentFile
+    require(artifactDirectory.name == artifact) {
+        "Shared FFmpeg provider AAR is not in its Maven artifact directory: ${aar.absolutePath}"
+    }
+    var groupDirectory = artifactDirectory.parentFile
+    group.split('.').asReversed().forEach { segment ->
+        require(groupDirectory.name == segment) {
+            "Shared FFmpeg provider AAR is not in its Maven group directory: ${aar.absolutePath}"
+        }
+        groupDirectory = groupDirectory.parentFile
+    }
+    val pom = versionDirectory.resolve("$artifact-$version.pom")
+    require(pom.isFile) {
+        "Shared FFmpeg provider POM does not exist: ${pom.absolutePath}"
+    }
+    return SharedFfmpegProvider(
+        aar,
+        groupDirectory,
+        group,
+        artifact,
+        version,
+        ffmpegVersion,
+        commit,
+        sha256(aar),
+    )
+}
+
 fun resolveGitRevision(directory: File): String {
     if (!directory.isDirectory) {
         throw GradleException("Source directory does not exist: ${directory.absolutePath}")
@@ -633,6 +784,13 @@ val cmakeRequiredFfmpegArchives = providers.provider {
 val requiredFfmpegArchives = providers.provider { resolveRequiredFfmpegArchives() }
 val ffmpegDecoders = providers.provider { resolveFfmpegDecoders() }
 val ffmpegStaticMode = providers.provider { resolveFfmpegStaticMode() }
+val sharedFfmpegEnabled = configuredSharedFfmpegAar.isPresent
+val sharedFfmpegProvider = providers.provider {
+    checkNotNull(readSharedFfmpegProvider()) {
+        "jellyfinSharedFfmpegAar was not supplied."
+    }
+}
+val sharedFfmpegRoot = layout.buildDirectory.dir("shared-ffmpeg-provider")
 val stagedFfmpegArchiveFiles = requiredFfmpegArchives.map { archives ->
     ffmpegArchiveFiles(stagedFfmpegRoot, archives)
 }
@@ -957,7 +1115,7 @@ val stageFfmpegConfigHeader by tasks.registering {
 }
 
 val stagedLibyuvArchiveFiles = expectedAbis.map { abi ->
-    libyuvRoot.resolve("android-libs/$abi/libyuv.a")
+    libyuvRoot.resolve("android-libs/$abi/libyuv.so")
 }
 val libyuvSourceFiles = fileTree(libyuvRoot) {
     exclude(".git/**")
@@ -970,9 +1128,9 @@ val libyuvArchiveTasks = expectedAbis.map { abi ->
     val suffix = taskSuffix(abi)
     val nativeBuildDirectory = libyuvRoot.resolve("build-$abi")
     val cmakeCache = nativeBuildDirectory.resolve("CMakeCache.txt")
-    val outputArchive = nativeBuildDirectory.resolve("libyuv.a")
+    val outputArchive = nativeBuildDirectory.resolve("libyuv.so")
     val stagedArchiveDirectory = libyuvRoot.resolve("android-libs/$abi")
-    val stagedArchive = stagedArchiveDirectory.resolve("libyuv.a")
+    val stagedArchive = stagedArchiveDirectory.resolve("libyuv.so")
 
     val configureTask = tasks.register<Exec>("configureLibyuv$suffix") {
         group = "build"
@@ -983,6 +1141,8 @@ val libyuvArchiveTasks = expectedAbis.map { abi ->
         inputs.property("cmakeCommand", providers.provider { resolveCmakeCommand() })
         inputs.property("ninjaCommand", providers.provider { resolveNinjaCommand() })
         inputs.property("ndkPath", providers.provider { resolveAndroidNdkRoot().canonicalPath })
+        inputs.property("releaseFlags", "-O3 -flto=thin")
+        inputs.property("interproceduralOptimizationRelease", true)
         outputs.file(cmakeCache)
 
         doFirst {
@@ -1003,8 +1163,9 @@ val libyuvArchiveTasks = expectedAbis.map { abi ->
                 "-DANDROID_ABI=$abi",
                 "-DANDROID_PLATFORM=${androidApi.get()}",
                 "-DCMAKE_BUILD_TYPE=Release",
-                "-DBUILD_SHARED_LIBS=OFF",
-                "-DBUILD_STATIC_LIBS=ON",
+                "-DCMAKE_C_FLAGS_RELEASE=-O3 -flto=thin",
+                "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -flto=thin",
+                "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON",
             )
         }
     }
@@ -1026,7 +1187,7 @@ val libyuvArchiveTasks = expectedAbis.map { abi ->
             commandLine(
                 resolveCmakeCommand(),
                 "--build", nativeBuildDirectory.absolutePath,
-                "--target", "yuv",
+                "--target", "yuv_shared",
                 "--parallel", nativeJobs.get().toString(),
             )
         }
@@ -1055,7 +1216,7 @@ val libyuvArchiveTasks = expectedAbis.map { abi ->
 
 val buildLibyuv by tasks.registering {
     group = "build"
-    description = "Builds or reuses the libyuv static dependency required by the renderer patch."
+    description = "Builds or reuses the shared libyuv dependency required by the renderer patch."
     dependsOn(libyuvArchiveTasks)
 
     doLast {
@@ -1103,7 +1264,9 @@ val prepareNativeDependencies by tasks.registering {
     description = "Prepares FFmpeg and libyuv before any nested Media3 native build starts."
     dependsOn(buildLibyuv)
     dependsOn(
-        if (ffmpegStaticMode.get() == "source") {
+        if (sharedFfmpegEnabled) {
+            stageSharedFfmpegProvider
+        } else if (ffmpegStaticMode.get() == "source") {
             prepareFfmpegSourceDependencies
         } else {
             prepareFfmpegPrebuiltDependencies
@@ -1111,17 +1274,28 @@ val prepareNativeDependencies by tasks.registering {
     )
 
     doLast {
-        assertFfmpegArchives(
-            stagedFfmpegRoot,
-            cmakeRequiredFfmpegArchives.get(),
-            "Prepared FFmpeg JNI archives",
-        )
+        if (sharedFfmpegEnabled) {
+            val provider = checkNotNull(sharedFfmpegProvider.get())
+            require(sharedFfmpegRoot.get().asFile.isDirectory) {
+                "Shared FFmpeg provider was not staged."
+            }
+            logger.lifecycle(
+                "Native dependencies use shared FFmpeg " +
+                    "${provider.group}:${provider.artifact}:${provider.version}."
+            )
+        } else {
+            assertFfmpegArchives(
+                stagedFfmpegRoot,
+                cmakeRequiredFfmpegArchives.get(),
+                "Prepared FFmpeg JNI archives",
+            )
+            logger.lifecycle(
+                "Native dependencies use static FFmpeg mode '${ffmpegStaticMode.get()}'."
+            )
+        }
         assertFilesExist(
             stagedLibyuvArchiveFiles,
             "Prepared libyuv JNI archives are missing",
-        )
-        logger.lifecycle(
-            "Native dependencies are ready in FFmpeg mode '${ffmpegStaticMode.get()}'."
         )
     }
 }
@@ -1141,11 +1315,20 @@ val assemblePatchedMedia3Aars by tasks.registering(Exec::class) {
 
     workingDir(mediaRoot)
 
-    val mediaGradleArguments =
-        allAars.map { "${it.projectPath}:publishReleasePublicationToMavenRepository" } +
-            "-PmavenRepo=${media3MavenRoot.absolutePath}" +
-            "-Pmedia3MavenVersion=${media3MavenVersion.get()}" +
-            "-PjellyfinAndroidNdkVersion=${selectedAndroidNdkVersion.get()}"
+    val mediaGradleArguments = buildList {
+        addAll(allAars.map { "${it.projectPath}:publishReleasePublicationToMavenRepository" })
+        add("-PmavenRepo=${media3MavenRoot.absolutePath}")
+        add("-Pmedia3MavenVersion=${media3MavenVersion.get()}")
+        add("-PjellyfinAndroidNdkVersion=${selectedAndroidNdkVersion.get()}")
+        if (sharedFfmpegEnabled) {
+            val provider = sharedFfmpegProvider.get()
+            add("-PjellyfinSharedFfmpegRoot=${sharedFfmpegRoot.get().asFile.absolutePath}")
+            add("-PjellyfinSharedFfmpegMavenRepo=${provider.mavenRoot.absolutePath}")
+            add("-PjellyfinSharedFfmpegGroup=${provider.group}")
+            add("-PjellyfinSharedFfmpegArtifact=${provider.artifact}")
+            add("-PjellyfinSharedFfmpegVersion=${provider.version}")
+        }
+    }
     if (isWindows) {
         commandLine(
             "cmd.exe",
@@ -1162,15 +1345,19 @@ val assemblePatchedMedia3Aars by tasks.registering(Exec::class) {
     }
 
     doFirst {
-        assertFfmpegArchives(
-            stagedFfmpegRoot,
-            cmakeRequiredFfmpegArchives.get(),
-            "FFmpeg JNI link archives declared by CMake",
-        )
-        if (!ffmpegAvconfigHeader.isFile) {
-            throw GradleException(
-                "FFmpeg JNI config header is missing: ${ffmpegAvconfigHeader.absolutePath}"
+        if (sharedFfmpegEnabled) {
+            checkNotNull(sharedFfmpegProvider.get())
+        } else {
+            assertFfmpegArchives(
+                stagedFfmpegRoot,
+                cmakeRequiredFfmpegArchives.get(),
+                "FFmpeg JNI link archives declared by CMake",
             )
+            if (!ffmpegAvconfigHeader.isFile) {
+                throw GradleException(
+                    "FFmpeg JNI config header is missing: ${ffmpegAvconfigHeader.absolutePath}"
+                )
+            }
         }
         val wrapper = mediaRoot.resolve(if (isWindows) "gradlew.bat" else "gradlew")
         if (!wrapper.isFile) {
@@ -1198,7 +1385,10 @@ val assemblePatchedMedia3Aars by tasks.registering(Exec::class) {
 val buildMedia3Aars by tasks.registering(Copy::class) {
     group = "build"
     description = "Builds custom Media3 and FFmpeg release AARs into OUTPUT."
-    dependsOn(prepareNativeDependencies, assemblePatchedMedia3Aars, exportFfmpegStaticLibraries)
+    dependsOn(prepareNativeDependencies, assemblePatchedMedia3Aars)
+    if (!sharedFfmpegEnabled) {
+        dependsOn(exportFfmpegStaticLibraries)
+    }
 
     inputs.property("artifactVersion", artifactVersion)
     inputs.property("mediaSourceVersion", mediaSourceVersion)
@@ -1251,8 +1441,19 @@ val buildMedia3Aars by tasks.registering(Copy::class) {
         writeTextIfChanged(
             ffmpegVersionFile,
             "artifact_version=$programVersion\n" +
-                "version=${ffmpegVersion.get()}\n" +
-                "source_revision=${ffmpegSourceRevision.get()}\n" +
+                if (!sharedFfmpegEnabled) {
+                    "mode=static\n" +
+                        "version=${ffmpegVersion.get()}\n" +
+                        "source_revision=${ffmpegSourceRevision.get()}\n"
+                } else {
+                    val provider = sharedFfmpegProvider.get()
+                    "mode=shared\n" +
+                        "version=${provider.ffmpegVersion}\n" +
+                        "provider_version=${provider.version}\n" +
+                        "provider=${provider.group}:${provider.artifact}:${provider.version}\n" +
+                        "source_revision=${provider.commit}\n" +
+                        "sha256=${provider.sha256}\n"
+                } +
                 "ndk_version=${selectedAndroidNdkVersion.get()}\n",
         )
         writeTextIfChanged(
@@ -1269,6 +1470,38 @@ val buildMedia3Aars by tasks.registering(Copy::class) {
     }
 }
 
+val verifySharedFfmpegProvider by tasks.registering {
+    group = "verification"
+    description = "Validates the optional shared FFmpeg provider AAR."
+    configuredSharedFfmpegAar.orNull?.let { configured ->
+        inputs.property("jellyfinSharedFfmpegAar", configured)
+    }
+
+    doLast {
+        if (!sharedFfmpegEnabled) {
+            logger.quiet("Shared FFmpeg provider not supplied; Media3 static FFmpeg mode selected.")
+        } else {
+            val provider = sharedFfmpegProvider.get()
+            logger.quiet(
+                "Validated shared FFmpeg provider ${provider.group}:${provider.artifact}:${provider.version} " +
+                    "(${provider.sha256})."
+            )
+        }
+    }
+}
+
+val stageSharedFfmpegProvider by tasks.registering(Sync::class) {
+    group = "build"
+    description = "Stages the validated shared FFmpeg provider for the nested Media3 native build."
+    dependsOn(verifySharedFfmpegProvider)
+    onlyIf { sharedFfmpegEnabled }
+    from(configuredSharedFfmpegAar.map {
+        val provider = checkNotNull(sharedFfmpegProvider.get())
+        zipTree(provider.aar)
+    })
+    into(sharedFfmpegRoot)
+}
+
 val verifyPublishedMedia3Repository by tasks.registering {
     group = "verification"
     description = "Verifies the fork-specific Media3 Maven repository and its checksums."
@@ -1278,7 +1511,10 @@ val verifyPublishedMedia3Repository by tasks.registering {
 
     doLast {
         val version = media3MavenVersion.get()
-        require(Regex("""^\d+\.\d+\.\d+-thor\.[0-9a-f]{12}$""").matches(version)) {
+        require(
+            Regex("""^\d+\.\d+\.\d+-thor\.[0-9a-f]{12}(?:-shared\.[0-9a-f]{12})?$""")
+                .matches(version)
+        ) {
             "Patched Media3 must use a fork-specific Maven version, not '$version'."
         }
 
@@ -1324,5 +1560,10 @@ buildMedia3Aars.configure {
     finalizedBy(verifyPublishedMedia3Repository)
 }
 val media3MavenVersion = media3ReleaseVersion.zip(mediaSourceRevision) { releaseVersion, revision ->
-    "$releaseVersion-thor.$revision"
+    val baseVersion = "$releaseVersion-thor.$revision"
+    if (sharedFfmpegEnabled) {
+        "$baseVersion-shared.${sharedFfmpegProvider.get().commit.take(12)}"
+    } else {
+        baseVersion
+    }
 }
