@@ -1,0 +1,141 @@
+diff --git a/build-logic/src/main/kotlin/androidx/media3/buildlogic/aarTypeWorkaround.kt b/build-logic/src/main/kotlin/androidx/media3/buildlogic/aarTypeWorkaround.kt
+index c5c5c13bb0..fa6ece054f 100644
+--- a/build-logic/src/main/kotlin/androidx/media3/buildlogic/aarTypeWorkaround.kt
++++ b/build-logic/src/main/kotlin/androidx/media3/buildlogic/aarTypeWorkaround.kt
+@@ -75,6 +75,7 @@ fun addMissingAarTypeToXml(xml: XmlProvider) {
+       "com.google.android.material:material",
+       "com.google.testparameterinjector:test-parameter-injector",
+       "io.antmedia:rtmp-client",
++      "io.github.abdallahmehiz:mpv-ffmpeg-android",
+       // go/keep-sorted end
+     )
+ 
+diff --git a/build-logic/src/main/kotlin/media3.publish.gradle.kts b/build-logic/src/main/kotlin/media3.publish.gradle.kts
+index 23d7b06800..87af77e955 100644
+--- a/build-logic/src/main/kotlin/media3.publish.gradle.kts
++++ b/build-logic/src/main/kotlin/media3.publish.gradle.kts
+@@ -63,7 +63,9 @@ afterEvaluate {
+               connection.set("scm:git:https://github.com/androidx/media.git")
+               url.set("https://github.com/androidx/media")
+             }
+-            withXml { addMissingAarTypeToXml(this) }
++            withXml {
++              addMissingAarTypeToXml(this)
++            }
+           }
+         }
+       }
+diff --git a/build.gradle.kts b/build.gradle.kts
+index 0c8ecea043..cf9258f950 100644
+--- a/build.gradle.kts
++++ b/build.gradle.kts
+@@ -42,6 +42,9 @@ plugins {
+ 
+ allprojects {
+   repositories {
++    providers.gradleProperty("jellyfinSharedFfmpegMavenRepo").orNull?.let { repository ->
++      maven { url = uri(repository) }
++    }
+     google()
+     mavenCentral()
+     maven {
+diff --git a/libraries/decoder_ffmpeg/build.gradle.kts b/libraries/decoder_ffmpeg/build.gradle.kts
+index 3db501c638..dbea4c3f67 100644
+--- a/libraries/decoder_ffmpeg/build.gradle.kts
++++ b/libraries/decoder_ffmpeg/build.gradle.kts
+@@ -33,8 +33,25 @@ if (project.file("src/main/jni/ffmpeg").exists()) {
+   // LINT.ThenChange(src/main/jni/CMakeLists.txt)
+ }
+ 
++providers.gradleProperty("jellyfinSharedFfmpegRoot").orNull?.let { sharedFfmpegRoot ->
++  android.defaultConfig.externalNativeBuild.cmake.arguments +=
++    "-DJELLYFIN_SHARED_FFMPEG_ROOT=$sharedFfmpegRoot"
++}
++
++val sharedFfmpegGroup = providers.gradleProperty("jellyfinSharedFfmpegGroup").orNull
++val sharedFfmpegArtifact = providers.gradleProperty("jellyfinSharedFfmpegArtifact").orNull
++val sharedFfmpegVersion = providers.gradleProperty("jellyfinSharedFfmpegVersion").orNull
++if (listOf(sharedFfmpegGroup, sharedFfmpegArtifact, sharedFfmpegVersion).any { it != null }) {
++  require(listOf(sharedFfmpegGroup, sharedFfmpegArtifact, sharedFfmpegVersion).all { !it.isNullOrBlank() }) {
++    "Shared FFmpeg group, artifact, and version must be supplied together."
++  }
++}
++
+ dependencies {
+   api(project(":lib-decoder"))
++  sharedFfmpegGroup?.let {
++    api("$it:$sharedFfmpegArtifact:$sharedFfmpegVersion")
++  }
+   // TODO(b/203752526): Remove this dependency.
+   implementation(project(":lib-exoplayer"))
+   implementation(libs.androidx.annotation)
+diff --git a/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt b/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
+index 31a1489a8b..aa930bbcd1 100644
+--- a/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
++++ b/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
+@@ -24,14 +24,26 @@ set(CMAKE_CXX_STANDARD 11)
+ project(libffmpegJNI C CXX)
+ 
+ set(ffmpeg_location "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg")
+-set(ffmpeg_binaries "${ffmpeg_location}/android-libs/${ANDROID_ABI}")
++set(JELLYFIN_SHARED_FFMPEG_ROOT "" CACHE PATH "Extracted mpv FFmpeg provider root")
++
++if(JELLYFIN_SHARED_FFMPEG_ROOT)
++    set(ffmpeg_headers "${JELLYFIN_SHARED_FFMPEG_ROOT}/headers/${ANDROID_ABI}")
++    set(ffmpeg_binaries "${JELLYFIN_SHARED_FFMPEG_ROOT}/jni/${ANDROID_ABI}")
++    set(ffmpeg_library_type SHARED)
++    set(ffmpeg_library_extension so)
++else()
++    set(ffmpeg_headers "${ffmpeg_location}")
++    set(ffmpeg_binaries "${ffmpeg_location}/android-libs/${ANDROID_ABI}")
++    set(ffmpeg_library_type STATIC)
++    set(ffmpeg_library_extension a)
++endif()
+ 
+ foreach(ffmpeg_lib avutil swresample avcodec swscale)
+-    set(ffmpeg_lib_filename lib${ffmpeg_lib}.a)
++    set(ffmpeg_lib_filename lib${ffmpeg_lib}.${ffmpeg_library_extension})
+     set(ffmpeg_lib_file_path ${ffmpeg_binaries}/${ffmpeg_lib_filename})
+     add_library(
+             ${ffmpeg_lib}
+-            STATIC
++            ${ffmpeg_library_type}
+             IMPORTED)
+     set_target_properties(
+             ${ffmpeg_lib} PROPERTIES
+@@ -43,14 +55,14 @@ set(yuv_location "${CMAKE_CURRENT_SOURCE_DIR}/libyuv")
+ set(yuv_binaries "${yuv_location}/android-libs/${ANDROID_ABI}")
+ add_library(
+         yuv
+-        STATIC
++        SHARED
+         IMPORTED)
+ set_target_properties(
+         yuv PROPERTIES
+         IMPORTED_LOCATION
+-        ${yuv_binaries}/libyuv.a)
++        ${yuv_binaries}/libyuv.so)
+ 
+-include_directories(${ffmpeg_location})
++include_directories(${ffmpeg_headers})
+ include_directories("${yuv_location}/include")
+ find_library(android_log_lib log)
+ 
+diff --git a/libraries/decoder_ffmpeg/src/main/jni/build_yuv.sh b/libraries/decoder_ffmpeg/src/main/jni/build_yuv.sh
+index ef236c390a..2d60a87b37 100644
+--- a/libraries/decoder_ffmpeg/src/main/jni/build_yuv.sh
++++ b/libraries/decoder_ffmpeg/src/main/jni/build_yuv.sh
+@@ -25,10 +25,10 @@ for abi in "${ABIS[@]}"; do
+     "-DCMAKE_C_FLAGS_RELEASE=${release_flags}" \
+     "-DCMAKE_CXX_FLAGS_RELEASE=${release_flags}" \
+     -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON \
+-    -DBUILD_SHARED_LIBS=OFF \
+-    -DBUILD_STATIC_LIBS=ON
++    -DBUILD_SHARED_LIBS=ON \
++    -DBUILD_STATIC_LIBS=OFF
+ 
+   cmake --build "${build_dir}" --target yuv --parallel "${JOBS}"
+   mkdir -p "./android-libs/${abi}"
+-  cp "${build_dir}/libyuv.a" "./android-libs/${abi}/libyuv.a"
++  cp "${build_dir}/libyuv.so" "./android-libs/${abi}/libyuv.so"
+ done
