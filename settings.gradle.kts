@@ -12,6 +12,7 @@ val aarOutputTasks = setOf(
     "stageFfmpegStaticLibraries",
     "stagePrebuiltFfmpegStaticLibraries",
     "validateFfmpegArchiveResolution",
+    "verifyPublishedMedia3Repository",
     "validatePrebuiltFfmpegStaticLibraries",
 )
 val aarOutputTaskPrefixes = listOf(
