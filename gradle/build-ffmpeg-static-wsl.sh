@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 <module-path> <windows-toolchain-bin> <build-script> <android-api> <decoder...>" >&2
+    echo "Usage: $0 <module-path> <ndk-revision> <build-script> <android-api> <decoder...>" >&2
 }
 
 fail() {
@@ -29,111 +29,67 @@ if (($# < 5)); then
 fi
 
 module_path="$1"
-windows_toolchain_bin="$2"
+ndk_revision="$2"
 build_script="$3"
 android_api="$4"
 shift 4
-readonly module_path windows_toolchain_bin build_script android_api
+readonly module_path ndk_revision build_script android_api
 readonly -a decoders=("$@")
 
 [[ "${android_api}" =~ ^[0-9]+$ ]] || fail "Android API must be a positive integer: ${android_api}"
 ((android_api > 0)) || fail "Android API must be a positive integer: ${android_api}"
+[[ "${ndk_revision}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    fail "Only stable numeric NDK revisions are supported: ${ndk_revision}"
 
-for command_name in make git tar tr mktemp wslpath; do
+for command_name in make git tar tr mktemp wget unzip; do
     require_command "${command_name}"
 done
 
 require_directory "${module_path}" "FFmpeg module path does not exist in WSL"
-require_directory "${windows_toolchain_bin}" "Windows NDK toolchain directory does not exist in WSL"
 require_file "${build_script}" "Media3 FFmpeg build script does not exist in WSL"
 
-for tool in clang.exe clang++.exe llvm-ar.exe llvm-nm.exe llvm-ranlib.exe llvm-strip.exe; do
-    require_file "${windows_toolchain_bin}/${tool}" "Required Windows NDK tool is missing"
-done
+ndk_major="${ndk_revision%%.*}"
+ndk_release="r${ndk_major}"
+ndk_cache_parent="/tmp/jellyfin-media3-ndk-cache"
+linux_ndk_root="${ndk_cache_parent}/android-ndk-${ndk_revision}"
+readonly ndk_major ndk_release ndk_cache_parent linux_ndk_root
 
-wrap_root="$(mktemp -d "/tmp/jellyfin-android-ndk-winwrap-${android_api}.XXXXXX")"
-readonly wrap_root
-trap 'rm -rf "${wrap_root}"' EXIT
+validate_linux_ndk() {
+    local root="$1"
+    local source_properties="${root}/source.properties"
+    local declared_revision
 
-wrap_ndk="${wrap_root}/ndk"
-wrap_bin="${wrap_ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin"
-readonly wrap_ndk wrap_bin
-mkdir -p "${wrap_bin}"
-
-# Media3's FFmpeg script expects Linux-style NDK executables. These small
-# wrappers translate mounted WSL paths, then call the Windows NDK tools.
-write_windows_tool_wrapper() {
-    local output="$1"
-    local executable="$2"
-    shift 2
-    local -a extra_args=("$@")
-    local quoted_executable
-    local extra
-
-    printf -v quoted_executable '%q' "${executable}"
-    {
-        echo '#!/usr/bin/env bash'
-        echo 'set -euo pipefail'
-        printf 'executable=%s\n' "${quoted_executable}"
-        echo 'converted=()'
-        echo 'for argument in "$@"; do'
-        cat <<'SCRIPT'
-    case "${argument}" in
-        /mnt/*)
-            argument="$(wslpath -w "${argument}")"
-            ;;
-        -I/mnt/*)
-            argument="-I$(wslpath -w "${argument#-I}")"
-            ;;
-        -L/mnt/*)
-            argument="-L$(wslpath -w "${argument#-L}")"
-            ;;
-        --sysroot=/mnt/*)
-            argument="--sysroot=$(wslpath -w "${argument#--sysroot=}")"
-            ;;
-        @/mnt/*)
-            argument="@$(wslpath -w "${argument#@}")"
-            ;;
-    esac
-    converted+=("${argument}")
-done
-SCRIPT
-        printf 'exec "${executable}"'
-        for extra in "${extra_args[@]}"; do
-            printf ' %q' "${extra}"
-        done
-        echo ' "${converted[@]}"'
-    } >"${output}"
-    chmod +x "${output}"
+    require_file "${source_properties}" "Linux NDK source.properties is missing"
+    declared_revision="$(sed -n 's/^[[:space:]]*Pkg\.Revision[[:space:]]*=[[:space:]]*//p' "${source_properties}" | head -n 1)"
+    [[ "${declared_revision}" == "${ndk_revision}" ]] ||
+        fail "Linux NDK revision mismatch: expected ${ndk_revision}, found ${declared_revision:-unknown}"
+    require_file \
+        "${root}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" \
+        "Linux NDK Clang is missing"
 }
 
-create_target_wrappers() {
-    local triple="$1"
-    local api="$2"
-    local target="${triple}${api}"
+if [[ ! -d "${linux_ndk_root}" ]]; then
+    mkdir -p "${ndk_cache_parent}"
+    ndk_download_root="$(mktemp -d "/tmp/jellyfin-media3-ndk-download.${ndk_revision}.XXXXXX")"
+    readonly ndk_download_root
+    trap 'rm -rf -- "${ndk_download_root}"' EXIT
+    ndk_archive="${ndk_download_root}/android-ndk-${ndk_release}-linux.zip"
+    readonly ndk_archive
 
-    write_windows_tool_wrapper \
-        "${wrap_bin}/${triple}${api}-clang" \
-        "${windows_toolchain_bin}/clang.exe" \
-        "--target=${target}"
-    write_windows_tool_wrapper \
-        "${wrap_bin}/${triple}${api}-gcc" \
-        "${windows_toolchain_bin}/clang.exe" \
-        "--target=${target}"
-    write_windows_tool_wrapper \
-        "${wrap_bin}/${triple}${api}-clang++" \
-        "${windows_toolchain_bin}/clang++.exe" \
-        "--target=${target}"
-    write_windows_tool_wrapper \
-        "${wrap_bin}/${triple}${api}-g++" \
-        "${windows_toolchain_bin}/clang++.exe" \
-        "--target=${target}"
-}
+    wget \
+        "https://dl.google.com/android/repository/android-ndk-${ndk_release}-linux.zip" \
+        -O "${ndk_archive}"
+    unzip -q "${ndk_archive}" -d "${ndk_download_root}"
+    extracted_ndk="${ndk_download_root}/android-ndk-${ndk_release}"
+    readonly extracted_ndk
+    validate_linux_ndk "${extracted_ndk}"
+    mv "${extracted_ndk}" "${linux_ndk_root}"
+fi
+validate_linux_ndk "${linux_ndk_root}"
 
-write_windows_tool_wrapper "${wrap_bin}/llvm-ar" "${windows_toolchain_bin}/llvm-ar.exe"
-write_windows_tool_wrapper "${wrap_bin}/llvm-nm" "${windows_toolchain_bin}/llvm-nm.exe"
-write_windows_tool_wrapper "${wrap_bin}/llvm-ranlib" "${windows_toolchain_bin}/llvm-ranlib.exe"
-write_windows_tool_wrapper "${wrap_bin}/llvm-strip" "${windows_toolchain_bin}/llvm-strip.exe"
+linux_toolchain_bin="${linux_ndk_root}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+readonly linux_toolchain_bin
+export PATH="${linux_toolchain_bin}:${PATH}"
 
 android_api_64="${android_api}"
 if ((android_api_64 < 21)); then
@@ -141,10 +97,14 @@ if ((android_api_64 < 21)); then
 fi
 readonly android_api_64
 
-create_target_wrappers armv7a-linux-androideabi "${android_api}"
-create_target_wrappers aarch64-linux-android "${android_api_64}"
-create_target_wrappers i686-linux-android "${android_api}"
-create_target_wrappers x86_64-linux-android "${android_api_64}"
+for tool in \
+    clang clang++ llvm-ar llvm-nm llvm-ranlib llvm-strip \
+    "armv7a-linux-androideabi${android_api}-clang" \
+    "aarch64-linux-android${android_api_64}-clang" \
+    "i686-linux-android${android_api}-clang" \
+    "x86_64-linux-android${android_api_64}-clang"; do
+    require_file "${linux_toolchain_bin}/${tool}" "Required Linux NDK tool is missing"
+done
 
 ffmpeg_link="${module_path}/jni/ffmpeg"
 readonly ffmpeg_link
@@ -156,37 +116,43 @@ require_directory "${ffmpeg_link}" "Media3 FFmpeg source link is missing in WSL"
 if [[ -f "${ffmpeg_link}/Makefile" ]]; then
     make -C "${ffmpeg_link}" distclean >/dev/null
 fi
-rm -rf "${ffmpeg_link}/android-libs"
+rm -rf -- "${ffmpeg_link}/android-libs"
 
 mkdir -p "${ffmpeg_link}/ffbuild-tmp"
 export TMPDIR="${ffmpeg_link}/ffbuild-tmp"
 
-# Fail early with a tiny compilation instead of surfacing an opaque FFmpeg
-# configure error when WSL cannot execute the Windows compiler correctly.
+# NDK Clang's generic Linux driver must produce runnable host utilities with
+# LTO, while its target-prefixed driver must produce Android objects.
 compiler_test_dir="${TMPDIR}/toolchain-test"
 readonly compiler_test_dir
-rm -rf "${compiler_test_dir}"
+rm -rf -- "${compiler_test_dir}"
 mkdir -p "${compiler_test_dir}"
-printf 'int jellyfin_ndk_test(void) { return 0; }\n' >"${compiler_test_dir}/test.c"
+printf 'int main(void) { return 0; }\n' >"${compiler_test_dir}/host.c"
+printf 'int jellyfin_ndk_test(void) { return 0; }\n' >"${compiler_test_dir}/android.c"
 (
     cd "${compiler_test_dir}"
-    "${wrap_bin}/aarch64-linux-android${android_api_64}-gcc" -c test.c -o test.o
+    "${linux_toolchain_bin}/clang" -x c -flto -fuse-ld=lld host.c -o host-test
+    ./host-test
+    "${linux_toolchain_bin}/aarch64-linux-android${android_api_64}-clang" \
+        -c android.c -o android.o
 )
-require_file "${compiler_test_dir}/test.o" "Windows NDK compiler interoperability test did not produce an object file"
-rm -rf "${compiler_test_dir}"
+require_file "${compiler_test_dir}/android.o" "Linux NDK Android compiler test did not produce an object file"
+rm -rf -- "${compiler_test_dir}"
 
-# The upstream script can be checked out with CRLF line endings on Windows.
-normalized_build_script="${wrap_root}/build_ffmpeg.sh"
+normalized_build_script="$(mktemp "/tmp/jellyfin-media3-build-ffmpeg.XXXXXX.sh")"
 readonly normalized_build_script
+if [[ -n "${ndk_download_root-}" ]]; then
+    trap 'rm -rf -- "${ndk_download_root}"; rm -f -- "${normalized_build_script}"' EXIT
+else
+    trap 'rm -f -- "${normalized_build_script}"' EXIT
+fi
 tr -d '\r' <"${build_script}" >"${normalized_build_script}"
 
-# Each make job launches a Windows compiler through WSL. Keeping this bounded
-# avoids exhausting the WSL transport on high-core-count hosts.
 export JOBS="${FFMPEG_JOBS:-4}"
 
 bash "${normalized_build_script}" \
     "${module_path}" \
-    "${wrap_ndk}" \
+    "${linux_ndk_root}" \
     linux-x86_64 \
     "${android_api}" \
     "${decoders[@]}"
