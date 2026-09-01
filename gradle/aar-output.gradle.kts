@@ -761,19 +761,12 @@ val buildFfmpegStaticLibraries by tasks.registering(Exec::class) {
                     "The WSL FFmpeg helper is missing: ${ffmpegWslBuildScript.absolutePath}"
                 )
             }
-            val windowsToolchain =
-                ndkRoot.resolve("toolchains/llvm/prebuilt/windows-x86_64/bin")
-            if (!windowsToolchain.isDirectory) {
-                throw GradleException(
-                    "Windows NDK LLVM toolchain is missing: ${windowsToolchain.absolutePath}"
-                )
-            }
             commandLine(
                 "wsl.exe",
                 "bash",
                 resolveWslPath(ffmpegWslBuildScript),
                 resolveWslPath(decoderMainRoot),
-                resolveWslPath(windowsToolchain),
+                selectedAndroidNdkVersion.get(),
                 resolveWslPath(ffmpegBuildScript),
                 androidApi.get(),
                 *decoders.toTypedArray(),
@@ -1151,7 +1144,8 @@ val assemblePatchedMedia3Aars by tasks.registering(Exec::class) {
     val mediaGradleArguments =
         allAars.map { "${it.projectPath}:publishReleasePublicationToMavenRepository" } +
             "-PmavenRepo=${media3MavenRoot.absolutePath}" +
-            "-Pmedia3MavenVersion=${media3MavenVersion.get()}"
+            "-Pmedia3MavenVersion=${media3MavenVersion.get()}" +
+            "-PjellyfinAndroidNdkVersion=${selectedAndroidNdkVersion.get()}"
     if (isWindows) {
         commandLine(
             "cmd.exe",
