@@ -6,6 +6,8 @@ set "JNI_FFMPEG=%REPO_ROOT%media\libraries\decoder_ffmpeg\src\main\jni\ffmpeg"
 set "AAR_OUTPUT=%OUTPUT_DIR%"
 set "WINDOWS_PREPARE_ONLY="
 set "PREPARE_PROGRESS=[1/3]"
+set "RESULT_EXIT=0"
+set "CLEANUP_EXIT=0"
 
 if not defined AAR_OUTPUT set "AAR_OUTPUT=%REPO_ROOT%OUTPUT"
 if /I "%~1"=="--prepare-only" set "WINDOWS_PREPARE_ONLY=1"
@@ -57,23 +59,23 @@ if /I not "%FFMPEG_STATIC_MODE%"=="source" if /I not "%FFMPEG_STATIC_MODE%"=="pr
     exit /b 1
 )
 
-set "FFMPEG_PREPARE_TASK=prepareFfmpegPrebuiltDependencies"
 if /I "%FFMPEG_STATIC_MODE%"=="source" (
-    set "FFMPEG_PREPARE_TASK=prepareFfmpegSourceDependencies"
-    where wsl.exe >nul 2>nul
-    if errorlevel 1 (
-        echo.
-        echo Error: WSL is required to build FFmpeg static libraries from source on Windows.
-        echo Set FFMPEG_STATIC_MODE=prebuilt only when complete ABI archives are available.
-        exit /b 1
-    )
+    if not defined ORG_GRADLE_PROJECT_jellyfinSharedFfmpegAar (
+        where wsl.exe >nul 2>nul
+        if errorlevel 1 (
+            echo.
+            echo Error: WSL is required to build FFmpeg static libraries from source on Windows.
+            echo Set FFMPEG_STATIC_MODE=prebuilt only when complete ABI archives are available.
+            exit /b 1
+        )
 
-    wsl.exe bash -lc "command -v make >/dev/null 2>&1 && command -v git >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 && command -v mktemp >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1"
-    if errorlevel 1 (
-        echo.
-        echo Error: The default WSL distribution is missing a required build tool.
-        echo Install GNU make, Git, tar, tr, mktemp, and wslpath inside WSL.
-        exit /b 1
+        wsl.exe bash -lc "command -v make >/dev/null 2>&1 && command -v git >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 && command -v mktemp >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1"
+        if errorlevel 1 (
+            echo.
+            echo Error: The default WSL distribution is missing a required build tool.
+            echo Install GNU make, Git, tar, tr, mktemp, and wslpath inside WSL.
+            exit /b 1
+        )
     )
 )
 
@@ -101,11 +103,11 @@ if errorlevel 1 (
 "%BASH_EXE%" --noprofile --norc "./update-repo.sh" --prepare-only %*
 set "PREPARE_EXIT=%ERRORLEVEL%"
 if not "%PREPARE_EXIT%"=="0" (
-    popd
     echo.
     echo Error: Source preparation failed with exit code %PREPARE_EXIT%.
     echo The build did not start because update-repo.sh returned an error.
-    exit /b %PREPARE_EXIT%
+    set "RESULT_EXIT=%PREPARE_EXIT%"
+    goto cleanup
 )
 
 if defined WINDOWS_PREPARE_ONLY (
@@ -122,46 +124,48 @@ if exist "%JNI_FFMPEG%\" rmdir /s /q "%JNI_FFMPEG%"
 mklink /J "%JNI_FFMPEG%" "%REPO_ROOT%ffmpeg" >nul
 set "JUNCTION_EXIT=%ERRORLEVEL%"
 if not "%JUNCTION_EXIT%"=="0" (
-    popd
     echo.
     echo Error: Windows could not create the Media3 FFmpeg directory junction.
     echo Check that the destination is writable and no process is using the old path.
-    exit /b %JUNCTION_EXIT%
+    set "RESULT_EXIT=%JUNCTION_EXIT%"
+    goto cleanup
 )
 
 echo.
 echo [3/3] Building Android archives...
 call "%REPO_ROOT%gradlew.bat" ^
     -PffmpegStaticMode=%FFMPEG_STATIC_MODE% ^
-    %FFMPEG_PREPARE_TASK% ^
     buildMedia3Aars
 set "BUILD_EXIT=%ERRORLEVEL%"
 
 if not "%BUILD_EXIT%"=="0" (
-    popd
     echo.
     echo Build failed. Gradle exited with code %BUILD_EXIT%.
-    exit /b %BUILD_EXIT%
+    set "RESULT_EXIT=%BUILD_EXIT%"
+    goto cleanup
 )
 
+:cleanup
 if exist "%JNI_FFMPEG%\" rmdir "%JNI_FFMPEG%" >nul 2>nul
 if exist "%JNI_FFMPEG%\" rmdir /s /q "%JNI_FFMPEG%"
 if exist "%JNI_FFMPEG%\" (
-    popd
     echo.
-    echo Error: Build succeeded, but the Media3 FFmpeg junction could not be removed.
-    exit /b 1
+    echo Error: The Media3 FFmpeg junction could not be removed.
+    set "CLEANUP_EXIT=1"
+    goto finish
 )
 "%BASH_EXE%" --noprofile --norc "./update-repo.sh" --restore-only
 set "RESTORE_EXIT=%ERRORLEVEL%"
 if not "%RESTORE_EXIT%"=="0" (
-    popd
     echo.
-    echo Error: Build succeeded, but restoring submodules failed with exit code %RESTORE_EXIT%.
-    exit /b %RESTORE_EXIT%
+    echo Error: Restoring submodules failed with exit code %RESTORE_EXIT%.
+    set "CLEANUP_EXIT=%RESTORE_EXIT%"
 )
 
+:finish
+if "%RESULT_EXIT%"=="0" if not "%CLEANUP_EXIT%"=="0" set "RESULT_EXIT=%CLEANUP_EXIT%"
 popd
+if not "%RESULT_EXIT%"=="0" exit /b %RESULT_EXIT%
 echo.
 echo Build complete.
 echo Artifacts: "%AAR_OUTPUT%"
