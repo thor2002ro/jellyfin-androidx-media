@@ -71,6 +71,7 @@ media_merge_version="${MEDIA_MERGE_VERSION:-${2:-}}"
 ffmpeg_ref="${FFMPEG_REF:-${3:-master}}"
 ffmpeg_url="${FFMPEG_URL:-https://github.com/FFmpeg/FFmpeg.git}"
 ffmpeg_static_mode="${FFMPEG_STATIC_MODE:-source}"
+shared_ffmpeg_aar="${ORG_GRADLE_PROJECT_jellyfinSharedFfmpegAar:-}"
 output_root="${OUTPUT_DIR:-${repo_root}/OUTPUT}"
 
 jni_root="${media_root}/libraries/decoder_ffmpeg/src/main/jni"
@@ -99,11 +100,6 @@ esac
 
 [[ -f "${aar_gradle_script}" ]] ||
     fail "${aar_gradle_script} is missing. Restore the Gradle build script before continuing."
-
-ffmpeg_prepare_task="prepareFfmpegPrebuiltDependencies"
-if [[ "${ffmpeg_static_mode}" == "source" ]]; then
-    ffmpeg_prepare_task="prepareFfmpegSourceDependencies"
-fi
 
 git_in() {
     local working_directory="$1"
@@ -136,12 +132,27 @@ clean_submodule() {
     git_in "${directory}" clean -ffdx
 }
 
+gitlink_commit() {
+    local parent_directory="$1"
+    local submodule_path="$2"
+    local entry
+    entry="$(git_in "${parent_directory}" ls-tree HEAD -- "${submodule_path}")"
+    [[ "${entry}" =~ ^160000[[:space:]]commit[[:space:]]([0-9a-f]{40})[[:space:]] ]] ||
+        fail "Could not resolve the recorded gitlink for ${submodule_path}."
+    printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
 restore_submodules() {
+    local media_commit
+    local ffmpeg_commit
+    media_commit="$(gitlink_commit "${repo_root}" media)"
+    ffmpeg_commit="$(gitlink_commit "${repo_root}" ffmpeg)"
+
     remove_generated_ffmpeg_link
     clean_submodule "${media_root}"
-    git_in "${media_root}" checkout --detach refs/remotes/origin/main
+    git_in "${media_root}" checkout --detach "${media_commit}"
     clean_submodule "${ffmpeg_root}"
-    git_in "${ffmpeg_root}" checkout --detach refs/remotes/origin/master
+    git_in "${ffmpeg_root}" checkout --detach "${ffmpeg_commit}"
 }
 
 update_ffmpeg_source() {
@@ -395,7 +406,7 @@ link_ffmpeg_source() {
 }
 
 run_gradle_build() {
-    if [[ "${ffmpeg_static_mode}" == "source" ]]; then
+    if [[ "${ffmpeg_static_mode}" == "source" && -z "${shared_ffmpeg_aar}" ]]; then
         require_command make "GNU make is required to build FFmpeg static libraries from source."
     fi
 
@@ -403,7 +414,6 @@ run_gradle_build() {
         cd "${repo_root}"
         ./gradlew \
             -PffmpegStaticMode="${ffmpeg_static_mode}" \
-            "${ffmpeg_prepare_task}" \
             buildMedia3Aars
     )
 }
@@ -430,8 +440,10 @@ main() {
     fi
 
     link_ffmpeg_source
+    trap restore_submodules EXIT
     run_gradle_build
     restore_submodules
+    trap - EXIT
     echo "Media3 and FFmpeg AARs are under ${output_root}"
 }
 
