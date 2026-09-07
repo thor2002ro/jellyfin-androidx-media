@@ -1,0 +1,138 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "androidx.media3",
+    "module": "media3-decoder-ffmpeg",
+    "version": "1.11.0-thor.25d7606aa219-shared.7ba069f4f11d",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "9.1.0"
+    }
+  },
+  "variants": [
+    {
+      "name": "releaseVariantReleaseApiPublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-api"
+      },
+      "dependencies": [
+        {
+          "group": "androidx.media3",
+          "module": "media3-decoder",
+          "version": {
+            "requires": "1.11.0-thor.25d7606aa219-shared.7ba069f4f11d"
+          }
+        },
+        {
+          "group": "io.github.abdallahmehiz",
+          "module": "mpv-ffmpeg-android",
+          "version": {
+            "requires": "8.1.2-thor.7ba069f4f11d"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.10"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "media3-decoder-ffmpeg-1.11.0-thor.25d7606aa219-shared.7ba069f4f11d.aar",
+          "url": "media3-decoder-ffmpeg-1.11.0-thor.25d7606aa219-shared.7ba069f4f11d.aar",
+          "size": 1696473,
+          "sha512": "2e6fb843fca8aee18efaf64c6360543efeada3fa1add6397f5d8d694528b18a3649da07bf5d472c23d16a624e19ac910142e35f00f9919f88ca2e0fd9373a834",
+          "sha256": "3987f6ad60e1eddb30f9bdf20e94d56b87bb04c34ea2316aa7edef04c2b063f8",
+          "sha1": "3ca404d17a47044f4ea4871606133f4c3a789583",
+          "md5": "50d3095fd9d9cabb3e3d3379580e9cd7"
+        }
+      ]
+    },
+    {
+      "name": "releaseVariantReleaseRuntimePublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-runtime"
+      },
+      "dependencies": [
+        {
+          "group": "androidx.media3",
+          "module": "media3-exoplayer",
+          "version": {
+            "requires": "1.11.0-thor.25d7606aa219-shared.7ba069f4f11d"
+          }
+        },
+        {
+          "group": "androidx.annotation",
+          "module": "annotation",
+          "version": {
+            "requires": "1.6.0"
+          }
+        },
+        {
+          "group": "androidx.media3",
+          "module": "media3-decoder",
+          "version": {
+            "requires": "1.11.0-thor.25d7606aa219-shared.7ba069f4f11d"
+          }
+        },
+        {
+          "group": "io.github.abdallahmehiz",
+          "module": "mpv-ffmpeg-android",
+          "version": {
+            "requires": "8.1.2-thor.7ba069f4f11d"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.10"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "media3-decoder-ffmpeg-1.11.0-thor.25d7606aa219-shared.7ba069f4f11d.aar",
+          "url": "media3-decoder-ffmpeg-1.11.0-thor.25d7606aa219-shared.7ba069f4f11d.aar",
+          "size": 1696473,
+          "sha512": "2e6fb843fca8aee18efaf64c6360543efeada3fa1add6397f5d8d694528b18a3649da07bf5d472c23d16a624e19ac910142e35f00f9919f88ca2e0fd9373a834",
+          "sha256": "3987f6ad60e1eddb30f9bdf20e94d56b87bb04c34ea2316aa7edef04c2b063f8",
+          "sha1": "3ca404d17a47044f4ea4871606133f4c3a789583",
+          "md5": "50d3095fd9d9cabb3e3d3379580e9cd7"
+        }
+      ]
+    },
+    {
+      "name": "releaseVariantReleaseSourcePublication",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "media3-decoder-ffmpeg-1.11.0-thor.25d7606aa219-shared.7ba069f4f11d-sources.jar",
+          "url": "media3-decoder-ffmpeg-1.11.0-thor.25d7606aa219-shared.7ba069f4f11d-sources.jar",
+          "size": 16180,
+          "sha512": "47ed50a806e3e06ed9e345789b660eb0d41b48e10a29759c9fa88d012c65c72ed89e25e12f0d8b725015b6dc31bb8cbbe5de9a5844ac121dda55164c261ce42d",
+          "sha256": "da607d09209c932dbaaf2649c0d1490d35c57e343f4e9342d3ff6c0e73f9c57a",
+          "sha1": "7c9e11b1dab631165e788c718712c59af6448fd6",
+          "md5": "5029fa670c49882bd4e0579186d3ca72"
+        }
+      ]
+    }
+  ]
+}
