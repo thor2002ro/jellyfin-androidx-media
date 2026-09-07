@@ -83,7 +83,7 @@ diff --git a/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt b/libraries/de
 index 31a1489a8b..aa930bbcd1 100644
 --- a/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
 +++ b/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
-@@ -24,14 +24,36 @@ set(CMAKE_CXX_STANDARD 11)
+@@ -24,14 +24,37 @@ set(CMAKE_CXX_STANDARD 11)
  project(libffmpegJNI C CXX)
  
  set(ffmpeg_location "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg")
@@ -94,6 +94,7 @@ index 31a1489a8b..aa930bbcd1 100644
 +    set(ffmpeg_headers
 +        "${JELLYFIN_SHARED_FFMPEG_ROOT}/prefab/modules/avcodec/include"
 +        "${JELLYFIN_SHARED_FFMPEG_ROOT}/prefab/modules/swresample/include"
++        "${JELLYFIN_SHARED_FFMPEG_ROOT}/prefab/modules/swscale/include"
 +        "${JELLYFIN_SHARED_FFMPEG_ROOT}/prefab/modules/avutil_headers/include")
 +    if(ANDROID_ABI STREQUAL "x86")
 +        list(APPEND ffmpeg_headers
