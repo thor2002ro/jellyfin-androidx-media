@@ -542,7 +542,7 @@ index e07963d740..7631000fa5 100644
  
  # Additional flags needed for "arm64-v8a" from NDK 23.1.7779620 and above.
 diff --git a/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh b/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
-index e0a9aa4f84..cc05734e41 100755
+index e0a9aa4f84..d3af1e3254 100755
 --- a/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
 +++ b/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
 @@ -26,7 +26,7 @@ ANDROID_ABI="$4"
@@ -564,8 +564,7 @@ index e0a9aa4f84..cc05734e41 100755
      --disable-avfilter
      --disable-symver
      --enable-swresample
-@@ -88,7 +87,8 @@ COMMON_OPTIONS="
-     ${COMMON_OPTIONS}
+@@ -89,6 +88,7 @@ cd "${FFMPEG_MODULE_PATH}/jni/ffmpeg"
  make -j$JOBS
  make install-libs
  make clean
@@ -573,8 +572,7 @@ index e0a9aa4f84..cc05734e41 100755
  ./configure \
      --libdir=android-libs/arm64-v8a \
      --arch=aarch64 \
-@@ -101,7 +101,8 @@ COMMON_OPTIONS="
-     ${COMMON_OPTIONS}
+@@ -102,6 +102,7 @@ make clean
  make -j$JOBS
  make install-libs
  make clean
@@ -582,8 +580,7 @@ index e0a9aa4f84..cc05734e41 100755
  ./configure \
      --libdir=android-libs/x86 \
      --arch=x86 \
-@@ -115,7 +116,8 @@ COMMON_OPTIONS="
-     ${COMMON_OPTIONS}
+@@ -116,6 +117,7 @@ make clean
  make -j$JOBS
  make install-libs
  make clean
@@ -593,7 +590,7 @@ index e0a9aa4f84..cc05734e41 100755
      --arch=x86_64 \
 diff --git a/libraries/decoder_ffmpeg/src/main/jni/build_yuv.sh b/libraries/decoder_ffmpeg/src/main/jni/build_yuv.sh
 new file mode 100644
-index 0000000000..7c85e48ad6
+index 0000000000..9189719c47
 --- /dev/null
 +++ b/libraries/decoder_ffmpeg/src/main/jni/build_yuv.sh
 @@ -0,0 +1,27 @@
@@ -625,7 +622,7 @@ index 0000000000..7c85e48ad6
 +  cp "${build_dir}/libyuv.a" "./android-libs/${abi}/libyuv.a"
 +done
 diff --git a/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc b/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
-index 4dd42aaa30..768386083a 100644
+index 4dd42aaa30..f5711b30e0 100644
 --- a/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
 +++ b/libraries/decoder_ffmpeg/src/main/jni/ffmpeg_jni.cc
 @@ -16,6 +16,11 @@
@@ -640,7 +637,7 @@ index 4dd42aaa30..768386083a 100644
  
  extern "C" {
  #ifdef __cplusplus
-@@ -30,11 +35,14 @@ extern "C" {
+@@ -30,14 +35,27 @@ extern "C" {
  #include <libavutil/error.h>
  #include <libavutil/opt.h>
  #include <libswresample/swresample.h>
@@ -655,26 +652,20 @@ index 4dd42aaa30..768386083a 100644
  #define LOGD(...) \
    ((void)__android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__))
  
-@@ -58,7 +66,17 @@ extern "C" {
-   JNIEXPORT RETURN_TYPE                                          \
-   Java_androidx_media3_decoder_ffmpeg_FfmpegAudioDecoder_##NAME( \
-       JNIEnv* env, jobject thiz, ##__VA_ARGS__)
--
-+
-+#define VIDEO_DECODER_FUNC(RETURN_TYPE, NAME, ...)                             \
-+  extern "C" {                                                                 \
-+  JNIEXPORT RETURN_TYPE                                                        \
++#define VIDEO_DECODER_FUNC(RETURN_TYPE, NAME, ...)                              \
++  extern "C" {                                                                  \
++  JNIEXPORT RETURN_TYPE                                                         \
 +      Java_androidx_media3_decoder_ffmpeg_ExperimentalFfmpegVideoDecoder_##NAME( \
-+          JNIEnv *env, jobject thiz, ##__VA_ARGS__);                           \
-+  }                                                                            \
-+  JNIEXPORT RETURN_TYPE                                                        \
++          JNIEnv* env, jobject thiz, ##__VA_ARGS__);                            \
++  }                                                                             \
++  JNIEXPORT RETURN_TYPE                                                         \
 +      Java_androidx_media3_decoder_ffmpeg_ExperimentalFfmpegVideoDecoder_##NAME( \
-+          JNIEnv *env, jobject thiz, ##__VA_ARGS__)
++          JNIEnv* env, jobject thiz, ##__VA_ARGS__)
 +
  #define ERROR_STRING_BUFFER_LENGTH 256
  
  // Output format corresponding to AudioFormat.ENCODING_PCM_16BIT.
-@@ -69,6 +82,12 @@ static const int AUDIO_DECODER_ERROR_INVALID_DATA = -1;
+@@ -50,6 +68,12 @@ static const int AUDIO_DECODER_ERROR_INVALID_DATA = -1;
  static const int AUDIO_DECODER_ERROR_OTHER = -2;
  // LINT.ThenChange(../java/androidx/media3/decoder/ffmpeg/FfmpegAudioDecoder.java)
  
@@ -687,9 +678,8 @@ index 4dd42aaa30..768386083a 100644
  static jmethodID growOutputBufferMethod;
  
  /**
-@@ -430,3 +454,439 @@ void releaseContext(AVCodecContext* context) {
-   }
-   avcodec_free_context(&context);
+@@ -453,2 +477,438 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved) {
+   return JNI_VERSION_1_6;
  }
 +// video
 +
