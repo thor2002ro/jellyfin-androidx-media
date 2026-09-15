@@ -11,12 +11,12 @@ index 8f30ee946f..3db501c638 100644
    sourceSets { getByName("androidTest").assets.directories.add("../test_data/src/test/assets") }
  }
 diff --git a/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt b/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
-index 9c2d53540d..31a1489a8b 100644
+index 7631000fa5..e2aea69083 100644
 --- a/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
 +++ b/libraries/decoder_ffmpeg/src/main/jni/CMakeLists.txt
-@@ -58,6 +58,16 @@ add_library(ffmpegJNI
-             SHARED
-             ffmpeg_jni.cc)
+@@ -62,6 +62,16 @@ set_target_properties(ffmpegJNI PROPERTIES
+                       CXX_VISIBILITY_PRESET hidden
+                       VISIBILITY_INLINES_HIDDEN ON)
  
 +if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
 +    target_compile_options(ffmpegJNI PRIVATE -O3 -flto=thin)
@@ -31,6 +31,11 @@ index 9c2d53540d..31a1489a8b 100644
  target_link_libraries(ffmpegJNI
                        PRIVATE android
                        PRIVATE swresample
+@@ -76,4 +86,3 @@ target_link_libraries(ffmpegJNI
+ if(ANDROID_ABI STREQUAL "arm64-v8a")
+     target_link_options(ffmpegJNI PRIVATE "-Wl,-Bsymbolic")
+ endif()
+-
 diff --git a/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh b/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
 index d3af1e3254..945acd8774 100755
 --- a/libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
