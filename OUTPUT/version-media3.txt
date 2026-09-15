@@ -1,4 +1,4 @@
 artifact_version=latest-SNAPSHOT
-source_version=1.11.0
-source_revision=25d7606aa219
-maven_version=1.11.0-thor.25d7606aa219-shared.7ba069f4f11d
+source_version=1.11.1
+source_revision=2e2fc46d98ca
+maven_version=1.11.1-thor.2e2fc46d98ca-shared.1005b294ffdf

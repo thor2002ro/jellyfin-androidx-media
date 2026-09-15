@@ -3,11 +3,11 @@
   <groupId>androidx.media3</groupId>
   <artifactId>media3-datasource</artifactId>
   <versioning>
-    <latest>1.11.0-thor.25d7606aa219-shared.7ba069f4f11d</latest>
-    <release>1.11.0-thor.25d7606aa219-shared.7ba069f4f11d</release>
+    <latest>1.11.1-thor.2e2fc46d98ca-shared.1005b294ffdf</latest>
+    <release>1.11.1-thor.2e2fc46d98ca-shared.1005b294ffdf</release>
     <versions>
-      <version>1.11.0-thor.25d7606aa219-shared.7ba069f4f11d</version>
+      <version>1.11.1-thor.2e2fc46d98ca-shared.1005b294ffdf</version>
     </versions>
-    <lastUpdated>20260907190829</lastUpdated>
+    <lastUpdated>20260915185035</lastUpdated>
   </versioning>
 </metadata>
