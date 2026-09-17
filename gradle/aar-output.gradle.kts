@@ -86,6 +86,10 @@ val configuredFfmpegStaticMode = providers.gradleProperty("ffmpegStaticMode")
     .orElse(providers.environmentVariable("FFMPEG_STATIC_MODE"))
     .orElse("source")
 val configuredSharedFfmpegAar = providers.gradleProperty("jellyfinSharedFfmpegAar")
+val sharedFfmpegSelection = selectSharedFfmpegProvider(
+    rootProject.projectDir,
+    configuredSharedFfmpegAar.orNull,
+)
 val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
 val cmakeVersion = "3.31.1"
 val androidApi = providers.gradleProperty("androidApi")
@@ -606,15 +610,15 @@ fun sha256(file: File): String {
 }
 
 fun readSharedFfmpegProvider(): SharedFfmpegProvider? {
-    val configured = configuredSharedFfmpegAar.orNull?.trim()?.takeIf(String::isNotEmpty)
-        ?: return null
-    val configuredFile = File(configured)
-    if (configuredFile.isAbsolute) {
-        throw GradleException(
-            "jellyfinSharedFfmpegAar must be relative to ${rootProject.projectDir.absolutePath}: $configured"
-        )
+    if (sharedFfmpegSelection.source == SharedFfmpegProviderSource.EXPLICIT) {
+        val configured = checkNotNull(configuredSharedFfmpegAar.orNull).trim()
+        if (File(configured).isAbsolute) {
+            throw GradleException(
+                "jellyfinSharedFfmpegAar must be relative to ${rootProject.projectDir.absolutePath}: $configured"
+            )
+        }
     }
-    val aar = rootProject.projectDir.resolve(configured).canonicalFile
+    val aar = sharedFfmpegSelection.aar ?: return null
     if (!aar.isFile) {
         throw GradleException("Shared FFmpeg provider AAR does not exist: ${aar.absolutePath}")
     }
@@ -789,10 +793,10 @@ val cmakeRequiredFfmpegArchives = providers.provider {
 val requiredFfmpegArchives = providers.provider { resolveRequiredFfmpegArchives() }
 val ffmpegDecoders = providers.provider { resolveFfmpegDecoders() }
 val ffmpegStaticMode = providers.provider { resolveFfmpegStaticMode() }
-val sharedFfmpegEnabled = configuredSharedFfmpegAar.isPresent
+val sharedFfmpegEnabled = sharedFfmpegSelection.aar != null
 val sharedFfmpegProvider = providers.provider {
     checkNotNull(readSharedFfmpegProvider()) {
-        "jellyfinSharedFfmpegAar was not supplied."
+        "No shared FFmpeg provider was selected."
     }
 }
 val sharedFfmpegRoot = layout.buildDirectory.dir("shared-ffmpeg-provider")
@@ -875,7 +879,7 @@ val validateFfmpegArchiveResolution by tasks.registering {
 val buildFfmpegStaticLibraries by tasks.registering(Exec::class) {
     group = "build"
     description = "Builds FFmpeg static libraries from the checked-out FFmpeg source when required."
-    dependsOn(validateFfmpegArchiveResolution)
+    dependsOn(validateFfmpegArchiveResolution, "verifySharedFfmpegProvider")
     inputs.property("ffmpegSourceRevision", ffmpegSourceRevision)
     inputs.property("androidApi", androidApi)
     inputs.property("ffmpegDecoders", ffmpegDecoders)
@@ -1012,7 +1016,7 @@ val validatePrebuiltFfmpegStaticLibraries by tasks.registering {
 val stagePrebuiltFfmpegStaticLibraries by tasks.registering(Sync::class) {
     group = "build"
     description = "Stages validated prebuilt FFmpeg archives when prebuilt mode is selected."
-    dependsOn(validatePrebuiltFfmpegStaticLibraries)
+    dependsOn(validatePrebuiltFfmpegStaticLibraries, "verifySharedFfmpegProvider")
 
     from(prebuiltFfmpegRoot) {
         include(*expectedAbis.map { abi -> "$abi/*.a" }.toTypedArray())
@@ -1478,17 +1482,28 @@ val buildMedia3Aars by tasks.registering(Copy::class) {
 val verifySharedFfmpegProvider by tasks.registering {
     group = "verification"
     description = "Validates the optional shared FFmpeg provider AAR."
-    configuredSharedFfmpegAar.orNull?.let { configured ->
-        inputs.property("jellyfinSharedFfmpegAar", configured)
+    sharedFfmpegSelection.aar?.let { selected ->
+        inputs.file(selected)
+            .withPropertyName("sharedFfmpegAar")
+            .withPathSensitivity(PathSensitivity.NONE)
     }
 
     doLast {
         if (!sharedFfmpegEnabled) {
-            logger.quiet("Shared FFmpeg provider not supplied; Media3 static FFmpeg mode selected.")
+            logger.warn(
+                "MPV shared FFmpeg provider AAR was not found; " +
+                    "falling back to Media3 FFmpeg mode '${ffmpegStaticMode.get()}'."
+            )
         } else {
             val provider = sharedFfmpegProvider.get()
+            val selectionLabel = when (sharedFfmpegSelection.source) {
+                SharedFfmpegProviderSource.EXPLICIT -> "explicit"
+                SharedFfmpegProviderSource.DISCOVERED -> "automatically discovered"
+                SharedFfmpegProviderSource.NONE -> error("Shared provider source is missing.")
+            }
             logger.quiet(
-                "Validated shared FFmpeg provider ${provider.group}:${provider.artifact}:${provider.version} " +
+                "Validated $selectionLabel shared FFmpeg provider " +
+                    "${provider.group}:${provider.artifact}:${provider.version} " +
                     "(${provider.sha256})."
             )
         }
@@ -1500,10 +1515,7 @@ val stageSharedFfmpegProvider by tasks.registering(Sync::class) {
     description = "Stages the validated shared FFmpeg provider for the nested Media3 native build."
     dependsOn(verifySharedFfmpegProvider)
     onlyIf { sharedFfmpegEnabled }
-    from(configuredSharedFfmpegAar.map {
-        val provider = checkNotNull(sharedFfmpegProvider.get())
-        zipTree(provider.aar)
-    })
+    from(sharedFfmpegProvider.map { provider -> zipTree(provider.aar) })
     into(sharedFfmpegRoot)
 }
 

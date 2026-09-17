@@ -71,7 +71,6 @@ media_merge_version="${MEDIA_MERGE_VERSION:-${2:-}}"
 ffmpeg_ref="${FFMPEG_REF:-${3:-master}}"
 ffmpeg_url="${FFMPEG_URL:-https://github.com/FFmpeg/FFmpeg.git}"
 ffmpeg_static_mode="${FFMPEG_STATIC_MODE:-source}"
-shared_ffmpeg_aar="${ORG_GRADLE_PROJECT_jellyfinSharedFfmpegAar:-}"
 output_root="${OUTPUT_DIR:-${repo_root}/OUTPUT}"
 
 jni_root="${media_root}/libraries/decoder_ffmpeg/src/main/jni"
@@ -406,10 +405,6 @@ link_ffmpeg_source() {
 }
 
 run_gradle_build() {
-    if [[ "${ffmpeg_static_mode}" == "source" && -z "${shared_ffmpeg_aar}" ]]; then
-        require_command make "GNU make is required to build FFmpeg static libraries from source."
-    fi
-
     (
         cd "${repo_root}"
         ./gradlew \

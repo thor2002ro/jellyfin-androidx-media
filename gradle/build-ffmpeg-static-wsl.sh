@@ -113,7 +113,7 @@ require_directory "${ffmpeg_link}" "Media3 FFmpeg source link is missing in WSL"
 # FFmpeg builds all ABIs in the same source tree. Remove only generated build
 # state before starting so an interrupted/repeated build cannot retain archive
 # members from a previously compiled ABI.
-if [[ -f "${ffmpeg_link}/Makefile" ]]; then
+if [[ -f "${ffmpeg_link}/ffbuild/config.mak" ]]; then
     make -C "${ffmpeg_link}" distclean >/dev/null
 fi
 rm -rf -- "${ffmpeg_link}/android-libs"

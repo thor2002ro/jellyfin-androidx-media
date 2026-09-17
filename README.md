@@ -15,9 +15,10 @@ treated as an official Jellyfin or AndroidX Media release.
 - Adds Microsoft GSM audio mapping and keeps the FFmpeg build limited to the
   codecs advertised by the decoder.
 - Enables FFmpeg frame-threaded video decoding.
-- Builds the FFmpeg submodule as static libraries by default, or consumes the
-  MPV FFmpeg provider AAR as shared libraries when `jellyfinSharedFfmpegAar` is
-  supplied, for `armeabi-v7a`, `arm64-v8a`, `x86`, and `x86_64`.
+- Automatically consumes the newest MPV FFmpeg provider AAR from the sibling
+  `mpv-android-lib` checkout as shared libraries. When no provider is found,
+  the build warns and falls back to its configured static FFmpeg mode for
+  `armeabi-v7a`, `arm64-v8a`, `x86`, and `x86_64`.
 
 ### Native surface rendering
 
@@ -106,8 +107,9 @@ To select another Media3 ref:
 update-repo.bat <Media3-ref>
 ```
 
-To reuse the MPV FFmpeg provider, pass its AAR as a path relative to this
-repository:
+Gradle automatically discovers the newest MPV FFmpeg provider under
+`../mpv-android-lib/OUTPUT/maven`. To override that selection, pass a specific
+AAR as a path relative to this repository:
 
 ```bat
 set "ORG_GRADLE_PROJECT_jellyfinSharedFfmpegAar=..\mpv-android-lib\OUTPUT\maven\io\github\abdallahmehiz\mpv-ffmpeg-android\<version>\mpv-ffmpeg-android-<version>.aar"
@@ -130,14 +132,22 @@ OUTPUT/android-libs/<ABI>/libswresample.a
 OUTPUT/android-libs/<ABI>/libswscale.a
 ```
 
+If no MPV provider is available, source mode requires WSL and the tools listed
+by the build error. The fallback is automatic and prints a warning before the
+local FFmpeg build starts.
+
 ## Build on Linux
 
-Install an Android NDK plus CMake and Ninja, then set `ANDROID_HOME`:
+Install an Android NDK plus CMake and Ninja, then set `ANDROID_HOME`. Gradle
+automatically discovers the newest provider from the sibling MPV checkout:
 
 ```bash
 export ANDROID_HOME="$HOME/Android/Sdk"
-ORG_GRADLE_PROJECT_jellyfinSharedFfmpegAar=../mpv-android-lib/OUTPUT/maven/io/github/abdallahmehiz/mpv-ffmpeg-android/<version>/mpv-ffmpeg-android-<version>.aar ./build.sh
+./build.sh
 ```
+
+Set `ORG_GRADLE_PROJECT_jellyfinSharedFfmpegAar` only to override the
+automatically discovered provider.
 
 To select another Media3 ref or mode:
 

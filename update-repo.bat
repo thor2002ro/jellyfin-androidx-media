@@ -59,26 +59,6 @@ if /I not "%FFMPEG_STATIC_MODE%"=="source" if /I not "%FFMPEG_STATIC_MODE%"=="pr
     exit /b 1
 )
 
-if /I "%FFMPEG_STATIC_MODE%"=="source" (
-    if not defined ORG_GRADLE_PROJECT_jellyfinSharedFfmpegAar (
-        where wsl.exe >nul 2>nul
-        if errorlevel 1 (
-            echo.
-            echo Error: WSL is required to build FFmpeg static libraries from source on Windows.
-            echo Set FFMPEG_STATIC_MODE=prebuilt only when complete ABI archives are available.
-            exit /b 1
-        )
-
-        wsl.exe bash -lc "command -v make >/dev/null 2>&1 && command -v git >/dev/null 2>&1 && command -v tar >/dev/null 2>&1 && command -v tr >/dev/null 2>&1 && command -v mktemp >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1"
-        if errorlevel 1 (
-            echo.
-            echo Error: The default WSL distribution is missing a required build tool.
-            echo Install GNU make, Git, tar, tr, mktemp, and wslpath inside WSL.
-            exit /b 1
-        )
-    )
-)
-
 rem Remove a junction from an earlier build before Git Bash cleans Media3.
 if exist "%JNI_FFMPEG%\" rmdir "%JNI_FFMPEG%" >nul 2>nul
 if exist "%JNI_FFMPEG%\" rmdir /s /q "%JNI_FFMPEG%"
