@@ -1,0 +1,138 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "androidx.media3",
+    "module": "media3-effect",
+    "version": "1.11.1-thor.2e2fc46d98ca-shared.29e619e767cd",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "9.1.0"
+    }
+  },
+  "variants": [
+    {
+      "name": "releaseVariantReleaseApiPublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-api"
+      },
+      "dependencies": [
+        {
+          "group": "androidx.media3",
+          "module": "media3-common",
+          "version": {
+            "requires": "1.11.1-thor.2e2fc46d98ca-shared.29e619e767cd"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.10"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "media3-effect-1.11.1-thor.2e2fc46d98ca-shared.29e619e767cd.aar",
+          "url": "media3-effect-1.11.1-thor.2e2fc46d98ca-shared.29e619e767cd.aar",
+          "size": 403078,
+          "sha512": "4511edfe6fcc1214de6183e64c5fdeef37717dd3d32621c48645c33b2a20b2474560bffa11ceb95186b9c2d014b5d45aec3e6e89e201512bf78218fd8b67e7a8",
+          "sha256": "8b08d51f8f3f35f6c1a8f7ec1ca068669b591c934538baa5922c9e2bf5b0d269",
+          "sha1": "23f564fa13dfc85d51ae619df820287f100cc0ca",
+          "md5": "9491a7d721cfd216675e62f2e34daf68"
+        }
+      ]
+    },
+    {
+      "name": "releaseVariantReleaseRuntimePublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-runtime"
+      },
+      "dependencies": [
+        {
+          "group": "androidx.annotation",
+          "module": "annotation",
+          "version": {
+            "requires": "1.6.0"
+          }
+        },
+        {
+          "group": "androidx.concurrent",
+          "module": "concurrent-futures",
+          "version": {
+            "requires": "1.2.0"
+          }
+        },
+        {
+          "group": "androidx.media3",
+          "module": "media3-datasource",
+          "version": {
+            "requires": "1.11.1-thor.2e2fc46d98ca-shared.29e619e767cd"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-guava",
+          "version": {
+            "requires": "1.9.0"
+          }
+        },
+        {
+          "group": "androidx.media3",
+          "module": "media3-common",
+          "version": {
+            "requires": "1.11.1-thor.2e2fc46d98ca-shared.29e619e767cd"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "2.2.10"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "media3-effect-1.11.1-thor.2e2fc46d98ca-shared.29e619e767cd.aar",
+          "url": "media3-effect-1.11.1-thor.2e2fc46d98ca-shared.29e619e767cd.aar",
+          "size": 403078,
+          "sha512": "4511edfe6fcc1214de6183e64c5fdeef37717dd3d32621c48645c33b2a20b2474560bffa11ceb95186b9c2d014b5d45aec3e6e89e201512bf78218fd8b67e7a8",
+          "sha256": "8b08d51f8f3f35f6c1a8f7ec1ca068669b591c934538baa5922c9e2bf5b0d269",
+          "sha1": "23f564fa13dfc85d51ae619df820287f100cc0ca",
+          "md5": "9491a7d721cfd216675e62f2e34daf68"
+        }
+      ]
+    },
+    {
+      "name": "releaseVariantReleaseSourcePublication",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "media3-effect-1.11.1-thor.2e2fc46d98ca-shared.29e619e767cd-sources.jar",
+          "url": "media3-effect-1.11.1-thor.2e2fc46d98ca-shared.29e619e767cd-sources.jar",
+          "size": 256185,
+          "sha512": "dd641dffa34c8d13376d31a6dac42e2e7b84a587f2a3aeab999efbc81550e84a4a1231b9d412c7c5c184f3c6e7ecf68e2d4de923e699e2096d56c2fb299d4b0d",
+          "sha256": "af49da1a0979dca5c7a57367812b375bd35fc0fac2a227dc84d4a1190ecf1cd8",
+          "sha1": "b37a96eef6f6f23a2fa2a26d1e94064dde72385c",
+          "md5": "436f05d682b8b00f6bfea23011b83714"
+        }
+      ]
+    }
+  ]
+}
