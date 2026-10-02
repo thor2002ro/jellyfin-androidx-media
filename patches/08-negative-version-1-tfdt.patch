@@ -1,0 +1,68 @@
+diff --git a/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/FragmentedMp4Extractor.java b/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/FragmentedMp4Extractor.java
+index e77b38c2a6efbe0c2be891d613e7c61471bc0ac9..d3fa8967ad3f8bc15fdef7447a632fc7fc5b8e5c 100644
+--- a/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/FragmentedMp4Extractor.java
++++ b/libraries/extractor/src/main/java/androidx/media3/extractor/mp4/FragmentedMp4Extractor.java
+@@ -1330,5 +1330,10 @@ public class FragmentedMp4Extractor implements Extractor {
+     tfdt.setPosition(Mp4Box.HEADER_SIZE);
+     int fullAtom = tfdt.readInt();
+     int version = BoxParser.parseFullBoxVersion(fullAtom);
+-    return version == 1 ? tfdt.readUnsignedLongToLong() : tfdt.readUnsignedInt();
++    // The BMFF spec (ISO/IEC 14496-12) states that baseMediaDecodeTime should be an
++    // unsigned integer, however some streams violate the spec and use signed integers in
++    // version 1 tfdt boxes. It's safe to always decode version 1 values as signed integers
++    // here, because unsigned integers will still be parsed correctly (unless their top bit
++    // is set, which is never true in practice).
++    return version == 1 ? tfdt.readLong() : tfdt.readUnsignedInt();
+   }
+diff --git a/libraries/extractor/src/test/java/androidx/media3/extractor/mp4/FragmentedMp4ExtractorNonParameterizedTest.java b/libraries/extractor/src/test/java/androidx/media3/extractor/mp4/FragmentedMp4ExtractorNonParameterizedTest.java
+index 9d2561697199265d47c081b091cb7e081f49cf25..b8f37fb33c243fb083c99f37d03f482067123aef 100644
+--- a/libraries/extractor/src/test/java/androidx/media3/extractor/mp4/FragmentedMp4ExtractorNonParameterizedTest.java
++++ b/libraries/extractor/src/test/java/androidx/media3/extractor/mp4/FragmentedMp4ExtractorNonParameterizedTest.java
+@@ -18,3 +18,4 @@
+ import static com.google.common.truth.Truth.assertThat;
+-
++import static java.nio.charset.StandardCharsets.US_ASCII;
++
+ import androidx.media3.common.Format;
+@@ -24,11 +25,14 @@ import androidx.media3.extractor.text.SubtitleParser;
+ import androidx.media3.test.utils.DumpFileAsserts;
+ import androidx.media3.test.utils.FakeExtractorInput;
+ import androidx.media3.test.utils.FakeExtractorOutput;
++import androidx.media3.test.utils.FakeTrackOutput;
+ import androidx.media3.test.utils.TestUtil;
+ import androidx.test.core.app.ApplicationProvider;
+ import androidx.test.ext.junit.runners.AndroidJUnit4;
+ import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.Iterables;
++import com.google.common.primitives.Bytes;
++import com.google.common.primitives.Longs;
+ import java.io.IOException;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+@@ -84,6 +88,25 @@ public final class FragmentedMp4ExtractorNonParameterizedTest {
+     assertThat(input.getMaxPeekLimit()).isLessThan(500);
+   }
+-
++  @Test
++  public void read_withNegativeVersion1TfdtBaseMediaDecodeTime_outputsShiftedSampleTimestamps()
++      throws Exception {
++    byte[] data =
++        TestUtil.getByteArray(
++            ApplicationProvider.getApplicationContext(), "media/mp4/sample_ac3_fragmented.mp4");
++    int tfdtTypeIndex = Bytes.indexOf(data, "tfdt".getBytes(US_ASCII));
++    // Overwrite the 64-bit version 1 baseMediaDecodeTime with -336 (-7000 us at 48 kHz).
++    System.arraycopy(Longs.toByteArray(-336L), 0, data, tfdtTypeIndex + 8, 8);
++    FragmentedMp4Extractor extractor =
++        new FragmentedMp4Extractor(SubtitleParser.Factory.UNSUPPORTED);
++
++    FakeExtractorOutput output = TestUtil.extractAllSamplesFromByteArray(extractor, data);
++
++    FakeTrackOutput trackOutput = output.trackOutputs.get(0);
++    assertThat(trackOutput.getSampleCount()).isEqualTo(9);
++    assertThat(trackOutput.getSampleTimeUs(0)).isEqualTo(-7_000L);
++    assertThat(trackOutput.getSampleTimeUs(1)).isEqualTo(25_000L);
++  }
++
+   @Test
+   public void extract_h264WithoutGopParsingFlags() throws Exception {
+     FragmentedMp4Extractor extractor =
