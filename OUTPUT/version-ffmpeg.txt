@@ -1,0 +1,8 @@
+artifact_version=latest-SNAPSHOT
+mode=shared
+version=master-git-2026-10-11-d9242028a636-dirty
+provider_version=8.0-master-git-2026-10-11-d9242028a636-dirty
+provider=io.github.abdallahmehiz:mpv-ffmpeg-android:8.0-master-git-2026-10-11-d9242028a636-dirty
+source_revision=d9242028a6362b86dffa254b696c36bc41fac620
+sha256=577e4d48a7bfbbced58856cf7bb38dff9dd728729269dbceaae02c2cf710aeb6
+ndk_version=29.0.14206865
