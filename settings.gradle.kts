@@ -1,3 +1,12 @@
+val splitAarScript = rootDir.resolve("../mpv-android-lib/gradle/restore-split-aars.settings.gradle.kts")
+if (splitAarScript.isFile) {
+    extra["splitAarRoots"] = listOf(
+        file(providers.gradleProperty("outputDir").orElse(providers.environmentVariable("OUTPUT_DIR")).orElse("OUTPUT").get()),
+        rootDir.resolve("../mpv-android-lib/OUTPUT"),
+    )
+    apply(from = splitAarScript)
+}
+
 val aarOutputTasks = setOf(
     "assemblePatchedMedia3Aars",
     "buildFfmpegStaticLibraries",
