@@ -21,25 +21,76 @@ if grep -Fq 'if [[ -z "${shared_ffmpeg_aar}" ]]; then' "$repository_root/update-
     fail "The Media3 wrapper must fetch its configured FFmpeg ref before every source preparation."
 fi
 
-verify_gitlink() {
-    local path="$1"
-    local url
-    local commit
-    local checked_out_commit
-    url="$(git -C "$repository_root" config -f .gitmodules "submodule.$path.url")"
-    commit="$(git -C "$repository_root" ls-tree HEAD -- "$path" | awk '{print $3}')"
-    [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail "Invalid $path gitlink: $commit"
-    checked_out_commit="$(git -C "$repository_root/$path" rev-parse HEAD)"
-    [[ "$checked_out_commit" == "$commit" ]] ||
-        fail "$path checkout $checked_out_commit does not match recorded gitlink $commit"
-    mkdir "$test_root/$path"
-    git -C "$test_root/$path" init -q
-    git -C "$test_root/$path" fetch -q --depth=1 "$url" "$commit" ||
-        fail "$path gitlink $commit is not fetchable from $url"
-}
+# Load the source helpers without running the build entry point.
+eval "$(sed -n '/^git_in() {/,/^update_ffmpeg_source() {/p' \
+    "$repository_root/update-repo.sh" | sed '$d')"
+eval "$(sed -n '/^update_ffmpeg_source() {/,/^fetch_media_refs() {/p' \
+    "$repository_root/update-repo.sh" | sed '$d')"
 
-verify_gitlink media
-verify_gitlink ffmpeg
+upstream="$test_root/upstream"
+git init -q -b master "$upstream"
+git -C "$upstream" config core.autocrlf false
+git -C "$upstream" config user.name 'Source test'
+git -C "$upstream" config user.email 'source-test@jellyfin.invalid'
+printf 'initial\n' > "$upstream/source.txt"
+git -C "$upstream" add source.txt
+git -C "$upstream" commit -qm initial
+
+for path in media ffmpeg; do
+    checkout="$test_root/$path"
+    ensure_source "$checkout" "$upstream"
+    [[ -d "$checkout/.git" ]] || fail "$path was not cloned"
+    git -C "$checkout" checkout -q --detach HEAD
+    printf 'local edit\n' > "$checkout/source.txt"
+    printf 'generated\n' > "$checkout/generated.txt"
+    ensure_source "$checkout" "$upstream"
+    git -C "$checkout" diff --quiet || fail "$path tracked edits survived reset"
+    [[ ! -e "$checkout/generated.txt" ]] || fail "$path generated files survived cleanup"
+done
+
+ffmpeg_root="$test_root/ffmpeg"
+ffmpeg_url="$upstream"
+ffmpeg_ref=master
+printf 'updated\n' > "$upstream/source.txt"
+git -C "$upstream" commit -qam update
+update_ffmpeg_source
+[[ "$(git -C "$ffmpeg_root" rev-parse HEAD)" == "$(git -C "$upstream" rev-parse master)" ]] ||
+    fail "FFmpeg did not fetch the updated master ref"
+git -C "$upstream" checkout -qb alternate
+printf 'alternate\n' > "$upstream/source.txt"
+git -C "$upstream" commit -qam alternate
+ffmpeg_ref=alternate
+update_ffmpeg_source
+[[ "$(git -C "$ffmpeg_root" rev-parse HEAD)" == "$(git -C "$upstream" rev-parse alternate)" ]] ||
+    fail "FFmpeg did not switch to the requested ref"
+
+# Existing checkouts may retain a submodule-style .git file after migration.
+git clone -q --separate-git-dir="$test_root/retained-git" "$upstream" "$test_root/retained"
+ensure_source "$test_root/retained" "$upstream"
+[[ -f "$test_root/retained/.git" ]] || fail "Existing Git metadata was replaced"
+
+eval "$(sed -n '/^fetch_media_refs() {/,/^ensure_libyuv_source() {/p' \
+    "$repository_root/update-repo.sh" | sed '$d')"
+media_root="$test_root/media"
+media_version=release
+media_prs=()
+git -C "$upstream" branch main
+git -C "$upstream" branch release
+mkdir -p "$test_root/patches"
+printf 'patched\n' > "$upstream/source.txt"
+git -C "$upstream" diff > "$test_root/patches/01-source.patch"
+git -C "$upstream" restore source.txt
+repo_root="$test_root"
+for iteration in 1 2; do
+    ensure_source "$media_root" "$upstream"
+    fetch_media_refs
+    git_in "$media_root" checkout --detach "$(resolve_media_ref)"
+    ensure_git_identity
+    apply_local_patches
+    [[ "$(cat "$media_root/source.txt")" == patched ]] || fail "Media3 patch was not applied"
+    [[ "$(git_in "$media_root" rev-list --count origin/release..HEAD)" == 1 ]] ||
+        fail "Repeated preparation stacked patch commits"
+done
 
 temporary_output="$test_root/output"
 mkdir -p "$temporary_output/android-libs/arm64-v8a"

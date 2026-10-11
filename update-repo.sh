@@ -125,33 +125,20 @@ remove_generated_ffmpeg_link() {
     rm -rf "${jni_ffmpeg}"
 }
 
-clean_submodule() {
+clean_source() {
     local directory="$1"
     git_in "${directory}" reset --hard
     git_in "${directory}" clean -ffdx
 }
 
-gitlink_commit() {
-    local parent_directory="$1"
-    local submodule_path="$2"
-    local entry
-    entry="$(git_in "${parent_directory}" ls-tree HEAD -- "${submodule_path}")"
-    [[ "${entry}" =~ ^160000[[:space:]]commit[[:space:]]([0-9a-f]{40})[[:space:]] ]] ||
-        fail "Could not resolve the recorded gitlink for ${submodule_path}."
-    printf '%s\n' "${BASH_REMATCH[1]}"
-}
-
-restore_submodules() {
-    local media_commit
-    local ffmpeg_commit
-    media_commit="$(gitlink_commit "${repo_root}" media)"
-    ffmpeg_commit="$(gitlink_commit "${repo_root}" ffmpeg)"
-
-    remove_generated_ffmpeg_link
-    clean_submodule "${media_root}"
-    git_in "${media_root}" checkout --detach "${media_commit}"
-    clean_submodule "${ffmpeg_root}"
-    git_in "${ffmpeg_root}" checkout --detach "${ffmpeg_commit}"
+ensure_source() {
+    local directory="$1"
+    local url="$2"
+    if [[ -d "${directory}/.git" || -f "${directory}/.git" ]]; then
+        clean_source "${directory}"
+    else
+        git clone --no-checkout -c core.autocrlf=false -c core.longpaths=true "${url}" "${directory}"
+    fi
 }
 
 update_ffmpeg_source() {
@@ -359,19 +346,9 @@ prepare_sources() {
     [[ -d "${repo_root}/.git" || -f "${repo_root}/.git" ]] ||
         fail "Run this script from a Git checkout."
 
-    git_in "${repo_root}" submodule sync --recursive
     remove_generated_ffmpeg_link
-    if [[ -d "${media_root}/.git" || -f "${media_root}/.git" ]]; then
-        clean_submodule "${media_root}"
-    fi
-    if [[ -d "${ffmpeg_root}/.git" || -f "${ffmpeg_root}/.git" ]]; then
-        clean_submodule "${ffmpeg_root}"
-    fi
-    git_in "${repo_root}" submodule update --init --recursive --force
-    [[ -d "${media_root}/.git" || -f "${media_root}/.git" ]] ||
-        fail "Media3 submodule is unavailable."
-    [[ -d "${ffmpeg_root}/.git" || -f "${ffmpeg_root}/.git" ]] ||
-        fail "FFmpeg submodule is unavailable."
+    ensure_source "${media_root}" https://github.com/androidx/media.git
+    ensure_source "${ffmpeg_root}" "${ffmpeg_url}"
 
     update_ffmpeg_source
 
@@ -415,7 +392,7 @@ run_gradle_build() {
 
 main() {
     if [[ "${restore_only}" == true ]]; then
-        restore_submodules
+        remove_generated_ffmpeg_link
         return
     fi
 
@@ -435,9 +412,9 @@ main() {
     fi
 
     link_ffmpeg_source
-    trap restore_submodules EXIT
+    trap remove_generated_ffmpeg_link EXIT
     run_gradle_build
-    restore_submodules
+    remove_generated_ffmpeg_link
     trap - EXIT
     echo "Media3 and FFmpeg AARs are under ${output_root}"
 }

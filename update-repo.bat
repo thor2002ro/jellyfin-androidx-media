@@ -138,7 +138,7 @@ if exist "%JNI_FFMPEG%\" (
 set "RESTORE_EXIT=%ERRORLEVEL%"
 if not "%RESTORE_EXIT%"=="0" (
     echo.
-    echo Error: Restoring submodules failed with exit code %RESTORE_EXIT%.
+    echo Error: Removing the temporary FFmpeg link failed with exit code %RESTORE_EXIT%.
     set "CLEANUP_EXIT=%RESTORE_EXIT%"
 )
 
