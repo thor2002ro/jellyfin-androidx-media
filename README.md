@@ -61,7 +61,7 @@ version supplied by the selected MPV FFmpeg provider AAR.
 
 ## Build requirements
 
-- Git with submodule support.
+- Git.
 - Java 17.
 - Android SDK with `ANDROID_HOME`, `ANDROID_SDK_ROOT`, or `sdk.dir` in `local.properties`.
 - At least one Android NDK installed in the SDK. The newest installed side-by-side NDK is selected automatically.
@@ -69,18 +69,17 @@ version supplied by the selected MPV FFmpeg provider AAR.
 - Network access to fetch AndroidX Media refs and the current libyuv `main`
   branch, which is built as a separate shared native dependency.
 
-Clone the repository with its Media3 and FFmpeg submodules:
+Clone the build repository:
 
 ```bash
-git clone --recurse-submodules https://github.com/thor2002ro/jellyfin-androidx-media.git
+git clone https://github.com/thor2002ro/jellyfin-androidx-media.git
 cd jellyfin-androidx-media
 ```
 
-For an existing checkout:
-
-```bash
-git submodule update --init --recursive
-```
+The build scripts clone missing Media3 and FFmpeg sources into ignored
+`media/` and `ffmpeg/` directories. Each normal build resets existing sources,
+fetches the selected refs, and reapplies the patch stack. Prepared sources remain
+after the build; `--build-only` reuses them without source preparation.
 
 ### Native tool selection
 
