@@ -66,7 +66,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 aar_gradle_script="${repo_root}/gradle/aar-output.gradle.kts"
 media_root="${repo_root}/media"
 ffmpeg_root="${repo_root}/ffmpeg"
-media_version="${MEDIA_VERSION:-${1:-release}}"
+media_version="${MEDIA_VERSION:-${1:-1.12.0-alpha02}}"
 media_merge_version="${MEDIA_MERGE_VERSION:-${2:-}}"
 ffmpeg_ref="${FFMPEG_REF:-${3:-master}}"
 ffmpeg_url="${FFMPEG_URL:-https://github.com/FFmpeg/FFmpeg.git}"
@@ -81,15 +81,11 @@ libyuv_url="https://chromium.googlesource.com/libyuv/libyuv"
 # Each entry is <pull request>:<upstream comparison branch>. Keeping the branch
 # beside the PR makes the cherry-pick range obvious when this list changes.
 media_prs=(
-    3280:main
-    3271:main
     3276:release
     3151:main
     3055:release
     3092:release
     3330:main
-    3351:main
-    3344:main
 )
 
 case "${ffmpeg_static_mode}" in

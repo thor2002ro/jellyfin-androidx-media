@@ -36,12 +36,11 @@ treated as an official Jellyfin or AndroidX Media release.
 
 ### Media3 fixes
 
-The build starts from Media3 `1.11.1` by default, applies the numbered local
-patches in [`patches/`](patches/), then applies these selected AndroidX Media pull requests:
+The build starts from Media3 `1.12.0-alpha02` by default, applies the numbered local
+patches in [`patches/`](patches/) (including an alpha02 adaptation of
+[PR 3280](https://github.com/androidx/media/pull/3280) for Dolby Vision in HLS/TS),
+then applies these selected AndroidX Media pull requests:
 
-- [PR 3280](https://github.com/androidx/media/pull/3280): Dolby Vision in HLS/TS.
-- [PR 3271](https://github.com/androidx/media/pull/3271): PCM and silence-skipping
-  math corrections.
 - [PR 3276](https://github.com/androidx/media/pull/3276): E-AC-3 sample-count
   parsing.
 - [PR 3151](https://github.com/androidx/media/pull/3151): subtitle cue stacking.
@@ -51,11 +50,8 @@ patches in [`patches/`](patches/), then applies these selected AndroidX Media pu
   coverage.
 - [PR 3330](https://github.com/androidx/media/pull/3330): 14-bit DTS frame-size
   calculation.
-- [PR 3351](https://github.com/androidx/media/pull/3351): HDR image handling.
-- [PR 3344](https://github.com/androidx/media/pull/3344): Dolby Vision playback
-  with an SDR fallback.
 The Media3 base is resolved at build time. Pass a branch, tag, or other valid
-Media3 ref when a build must use something other than `1.11.1`.
+Media3 ref when a build must use something other than `1.12.0-alpha02`.
 The static FFmpeg source follows `master`; shared builds use the
 version supplied by the selected MPV FFmpeg provider AAR.
 
