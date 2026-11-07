@@ -19,8 +19,8 @@ index 7631000fa5..e2aea69083 100644
                        VISIBILITY_INLINES_HIDDEN ON)
  
 +if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
-+    target_compile_options(ffmpegJNI PRIVATE -O3 -flto=thin)
-+    target_link_options(ffmpegJNI PRIVATE -flto=thin)
++    target_compile_options(ffmpegJNI PRIVATE -O3 -flto=full)
++    target_link_options(ffmpegJNI PRIVATE -flto=full)
 +    if(ANDROID_ABI STREQUAL "armeabi-v7a")
 +        target_compile_options(ffmpegJNI PRIVATE -mfpu=neon)
 +        target_compile_options(ffmpegJNI PRIVATE -mthumb)
@@ -109,20 +109,31 @@ index 9189719c47..ef236c390a 100644
 @@ -12,5 +12,9 @@ cd "${FFMPEG_MODULE_PATH}/jni/libyuv"
  for abi in "${ABIS[@]}"; do
    build_dir="build-${abi}"
-+  release_flags="-O3 -flto=thin"
++  release_flags="-O3 -flto=full"
 +  if [[ "${abi}" == "armeabi-v7a" ]]; then
 +    release_flags+=" -mthumb"
 +  fi
    rm -rf "${build_dir}"
    cmake -S . -B "${build_dir}" \
      -G "Unix Makefiles" \
-@@ -18,6 +22,9 @@ for abi in "${ABIS[@]}"; do
+@@ -18,6 +22,10 @@ for abi in "${ABIS[@]}"; do
      -DANDROID_ABI="${abi}" \
      -DANDROID_PLATFORM="${ANDROID_API}" \
      -DCMAKE_BUILD_TYPE=Release \
 +    "-DCMAKE_C_FLAGS_RELEASE=${release_flags}" \
 +    "-DCMAKE_CXX_FLAGS_RELEASE=${release_flags}" \
-+    -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON \
++    -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=OFF \
++    "-DCMAKE_SHARED_LINKER_FLAGS_RELEASE=-flto=full" \
      -DBUILD_SHARED_LIBS=OFF \
      -DBUILD_STATIC_LIBS=ON
- 
+
+diff --git a/libraries/effect/src/main/jni/CMakeLists.txt b/libraries/effect/src/main/jni/CMakeLists.txt
+--- a/libraries/effect/src/main/jni/CMakeLists.txt
++++ b/libraries/effect/src/main/jni/CMakeLists.txt
+@@ -24,2 +24,6 @@ project(media3EffectJNI C CXX)
+ find_library(log-lib log)
++if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
++    add_compile_options(-O3 -flto=full)
++    add_link_options(-flto=full)
++endif()
+ find_library(android-lib android)

@@ -698,7 +698,7 @@ fun readSharedFfmpegProvider(): SharedFfmpegProvider? {
     }
     requireProperty("ndk_version", "30.0.16248370")
     requireProperty("abis", expectedAbis.joinToString(","))
-    requireProperty("optimization", "O3,thin-lto,armv7-neon,armv7-thumb,arm64-neon")
+    requireProperty("optimization", "O3,full-lto,armv7-neon,armv7-thumb,arm64-neon")
     val decoders = requireProperty("decoders").split(',').map(String::trim).toSet()
     val missingDecoders = defaultFfmpegDecoders.filterNot(decoders::contains)
     if (missingDecoders.isNotEmpty()) {
@@ -1153,7 +1153,7 @@ val libyuvArchiveTasks = expectedAbis.map { abi ->
         inputs.property("cmakeCommand", providers.provider { resolveCmakeCommand() })
         inputs.property("ninjaCommand", providers.provider { resolveNinjaCommand() })
         inputs.property("ndkPath", providers.provider { resolveAndroidNdkRoot().canonicalPath })
-        inputs.property("releaseFlags", "-O3 -flto=thin")
+        inputs.property("releaseFlags", "-O3 -flto=full")
         inputs.property("interproceduralOptimizationRelease", true)
         outputs.file(cmakeCache)
 
@@ -1175,9 +1175,10 @@ val libyuvArchiveTasks = expectedAbis.map { abi ->
                 "-DANDROID_ABI=$abi",
                 "-DANDROID_PLATFORM=${androidApi.get()}",
                 "-DCMAKE_BUILD_TYPE=Release",
-                "-DCMAKE_C_FLAGS_RELEASE=-O3 -flto=thin",
-                "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -flto=thin",
-                "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON",
+                "-DCMAKE_C_FLAGS_RELEASE=-O3 -flto=full",
+                "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -flto=full",
+                "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=OFF",
+                "-DCMAKE_SHARED_LINKER_FLAGS_RELEASE=-flto=full",
             )
         }
     }
@@ -1543,7 +1544,7 @@ val verifyPublishedMedia3Repository by tasks.registering {
             "Media3 source revision is invalid: '$sourceRevision'."
         }
         require(
-            Regex("""^\d+\.\d+\.\d+-thor\.[0-9a-f]{12}(?:-shared\.[0-9a-f]{12})?$""")
+            Regex("""^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?-thor\.[0-9a-f]{12}(?:-shared\.[0-9a-f]{12})?$""")
                 .matches(version)
         ) {
             "Patched Media3 must use a fork-specific Maven version, not '$version'."
