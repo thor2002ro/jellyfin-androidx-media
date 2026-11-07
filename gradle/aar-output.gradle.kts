@@ -696,7 +696,7 @@ fun readSharedFfmpegProvider(): SharedFfmpegProvider? {
                 ffmpegVersion.removeSuffix("-dirty").endsWith("-${commit.take(12)}")))) {
         "Shared FFmpeg provider version $version does not match FFmpeg $ffmpegVersion at $commit"
     }
-    requireProperty("ndk_version", "29.0.14206865")
+    requireProperty("ndk_version", "30.0.16248370")
     requireProperty("abis", expectedAbis.joinToString(","))
     requireProperty("optimization", "O3,thin-lto,armv7-neon,armv7-thumb,arm64-neon")
     val decoders = requireProperty("decoders").split(',').map(String::trim).toSet()
